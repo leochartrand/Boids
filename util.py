@@ -7,12 +7,13 @@ class Settings:
     WIDTH : int
     HEIGHT: int
     SPEED: int
+    PARALLEL: int
 
-class Species(Enum):
-    GREEN = 0
-    ORANGE = 1
-    CYAN = 2
-    PREDATOR = 3
+class Species(float, Enum):
+    GREEN = 0.0
+    ORANGE = 1.0
+    CYAN = 2.0
+    PREDATOR = 3.0
 
 def getSpeciesImage(index):
     if index == Species.GREEN:
