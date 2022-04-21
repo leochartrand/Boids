@@ -9,26 +9,32 @@ pg.init()
 
 # PyGame parameters
 ##############################################################################
-WIDTH = 1900
-HEIGHT = 1000
+WIDTH = 3500
+HEIGHT = 2000
 SPEED = 3
 PARALLEL = 0
 gameSettings = util.Settings(WIDTH, HEIGHT, SPEED, PARALLEL)
 ##############################################################################
 SCREEN_SIZE = (gameSettings.WIDTH, gameSettings.HEIGHT)
-BACKGROUND_COLOR = (50,50,50)
-BACKGROUND_COLOR2 = (50,50,50,50)
+BACKGROUND_COLOR = (30,30,30)
 gameGlock = pg.time.Clock()
 pg.display.set_caption("CUDA Boids")
 screen = pg.display.set_mode(SCREEN_SIZE)
 ##############################################################################
 
-# Groupe maitre
-Agents = sc.getScenario(sc.type.THOUSAND, gameSettings)
+# Main sprite group
+Agents = sc.getScenario(sc.type.TWO, gameSettings)
 
 co.init(Agents, gameSettings)
 
+# Spatial partitioning grid
 g = grid.init(WIDTH,HEIGHT,Agents.sprites())
+
+screen.fill(BACKGROUND_COLOR)
+# Fading trails
+bg = pg.Surface((WIDTH,HEIGHT))
+bg.set_alpha(64)
+bg.fill(BACKGROUND_COLOR)
 
 # Main loop
 # Based on official docs:
@@ -41,7 +47,9 @@ while not done:
 
     tickTime = gameGlock.tick()
     print(tickTime)
-    screen.fill(BACKGROUND_COLOR)
+
+    # For pretty fading trails
+    screen.blit(bg, (0,0))
     
     # co.update()
     Agents.update()

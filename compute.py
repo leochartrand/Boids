@@ -1,4 +1,3 @@
-from sklearn import neighbors
 import util
 import pygame as pg
 import cupy as cp
@@ -19,6 +18,7 @@ def init(Agents, settings):
     numBoids = len(boids)
     posDir = np.zeros((numBoids, 19), dtype=float)
     dataBuffer = np.zeros((numBoids, 2), dtype=float)
+    gridBuffer = np.zeros((numBoids, 1), dtype=int)
     for i in range(numBoids):
         posDir[i,0] = rd.uniform(0, WIDTH)
         posDir[i,1] = rd.uniform(0, HEIGHT)

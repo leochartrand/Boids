@@ -1,6 +1,6 @@
 import util
 
-# Grille de partitionnment spatial
+# Spatial partitioning grid
 size = 100
 
 def init(w, h, l):
@@ -30,21 +30,18 @@ def remove(index, cell):
 
 def getCellNeighbors(index, cell):
     global cells, width, height, boidList
-    friends, strangers, predators = [], [], []
+    friends, strangers = [], []
     tileOffset = {-1, 0, 1}
     if cell in cells:
         for i in tileOffset:
             for i in tileOffset:
                 x = (cell[0] + i)%width
                 y = (cell[1] + i)%height
-                # neighbors += cells.get((x,y),[])
                 for agent in cells.get((x,y),[]):
                     if agent != index and boidList[agent].position.distance_to(boidList[index].position) < 100:
                         if boidList[agent].species == boidList[index].species:
                             friends.append(boidList[agent])
-                        elif agent.species == util.Species.PREDATOR:
-                            predators.append(boidList[agent])
                         else:
                             strangers.append(boidList[agent])
-    return friends, strangers, predators
+    return friends, strangers
 
