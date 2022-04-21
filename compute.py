@@ -1,8 +1,6 @@
 import numpy as np
 import numba as nb
 import random as rd
-import util
-import math
 
 def init(Agents, settings):
     global WIDTH, HEIGHT, SPEED, PARALLEL, GRID_CELL_SIZE
@@ -27,7 +25,6 @@ def init(Agents, settings):
         dataBuffer[i,3] = tempY
         specBuffer[i] = boids[i].species.value
         gridBuffer[i,0], gridBuffer[i,1] = getCell(dataBuffer[i,0], dataBuffer[i,1])
-    species = np.array([0,1,2])
     # Grid initialization
     global cells, gridW, gridH
     cells = {}
@@ -190,7 +187,7 @@ def normalize(x: np.float64, y: np.float64):
         return x, y
 
 def length(x,y):
-    return math.sqrt(x**2 + y**2)
+    return np.sqrt(x**2 + y**2)
 
 def distance(a,b):
     return abs(length(tempBuffer[a,0] - tempBuffer[b,0], tempBuffer[a,1] - tempBuffer[b,1]))

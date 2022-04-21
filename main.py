@@ -1,7 +1,5 @@
 import pygame as pg
-import scenario as sc
 import compute as co
-import numba as nb
 import util
 
 pg.init()
@@ -22,7 +20,7 @@ screen = pg.display.set_mode(SCREEN_SIZE)
 ##############################################################################
 
 # Main sprite group
-Agents = sc.getScenario(sc.type.CLASSIC)
+Agents = util.getScenario(util.scenario.CLASSIC)
 
 co.init(Agents, gameSettings)
 
