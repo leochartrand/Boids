@@ -47,10 +47,7 @@ def retrieveData():
 def update():
     toTempBuf()
     for i in nb.prange(numBoids):
-        adjustDirection(i)
-        clampSpeed(i)
-        move(i)
-        updateGridCell(i)
+        updateBoid(i)
     toDataBuf()
 
 # @nb.jit
@@ -69,9 +66,9 @@ def toDataBuf():
     dataBuffer[:,2] = tempBuffer[:,2]
     dataBuffer[:,3] = tempBuffer[:,3]
 
-# @nb.jit
-def adjustDirection(index):
+def updateBoid(index):
     global tempBuffer, gridBuffer
+    # Adjust directions
     x, y = 0.0, 0.0
     friends, strangers = getCellNeighbors(index, gridBuffer[index,0], gridBuffer[index,1])
     if len(friends) > 0:
@@ -99,10 +96,7 @@ def adjustDirection(index):
     # Update directions
     tempBuffer[index,2] += x
     tempBuffer[index,3] += y
-
-# @nb.jit  
-def clampSpeed(index):
-    global tempBuffer
+    # Clamp speed
     l = length(tempBuffer[index,2], tempBuffer[index,3])
     if l > 1.0:
         tempBuffer[index,2], tempBuffer[index,3] = normalize(tempBuffer[index,2], tempBuffer[index,3])
@@ -110,10 +104,7 @@ def clampSpeed(index):
         x, y = normalize(tempBuffer[index,2], tempBuffer[index,3])
         tempBuffer[index,2] = x / 2
         tempBuffer[index,3] = y / 2
-
-# @nb.jit
-def move(index):
-    global tempBuffer
+    # Move position
     tempBuffer[index,0] += tempBuffer[index,2] * SPEED
     tempBuffer[index,1] += tempBuffer[index,3] * SPEED
     # Edge wrap
@@ -125,10 +116,7 @@ def move(index):
         tempBuffer[index,1] = 0
     elif tempBuffer[index,1] < 0 :
         tempBuffer[index,1] = HEIGHT
-
-# @nb.jit
-def updateGridCell(index):
-    global tempBuffer
+    # Update grid cells
     x, y = getCell(tempBuffer[index,0], tempBuffer[index,1])
     if gridBuffer[index,0] != x or gridBuffer[index,1] != y:
         remove(index, gridBuffer[index,0], gridBuffer[index,1])
