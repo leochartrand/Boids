@@ -1,7 +1,7 @@
 import util
 from enum import Enum
 import pygame
-import boids
+import sprites
 
 class type(Enum):
     CLASSIC = 0
@@ -11,23 +11,23 @@ class type(Enum):
     BIG_CLASSIC = 4
     THOUSAND = 5
 
-def getScenario(index, settings):
+def getScenario(index):
     Agents = pygame.sprite.Group()
     if index == type.CLASSIC:
-        Boids = pygame.sprite.Group()
-        for index in range(1000):
-            Boids.add(boids.Boid(util.Species.CYAN, settings, index))
-        Agents.add(Boids.sprites())
+        Greens = pygame.sprite.Group()
+        for index in range(100):
+            Greens.add(sprites.Sprite(util.Species.CYAN, index))
+        Agents.add(Greens.sprites())
         return Agents
 
     if index == type.TWO:
-        Boids = pygame.sprite.Group()
+        Greens = pygame.sprite.Group()
         for index in range(500):
-            Boids.add(boids.Boid(util.Species.GREEN, settings, index))
-        Agents.add(Boids.sprites())
-        Boids2 = pygame.sprite.Group()
+            Greens.add(sprites.Sprite(util.Species.GREEN, index))
+        Agents.add(Greens.sprites())
+        Oranges = pygame.sprite.Group()
         for index in range(500, 1000):
-            Boids2.add(boids.Boid(util.Species.ORANGE, settings, index))
-        Agents.add(Boids2.sprites())
+            Oranges.add(sprites.Sprite(util.Species.ORANGE, index))
+        Agents.add(Oranges.sprites())
         return Agents
 

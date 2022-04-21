@@ -9,10 +9,10 @@ class Settings:
     SPEED: int
     PARALLEL: int
 
-class Species(float, Enum):
-    GREEN = 0.0
-    ORANGE = 1.0
-    CYAN = 2.0
+class Species(Enum):
+    GREEN = 0
+    ORANGE = 1
+    CYAN = 2
 
 def getSpeciesImage(index):
     if index == Species.GREEN:

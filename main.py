@@ -2,7 +2,6 @@ import pygame as pg
 import scenario as sc
 import compute as co
 import numba as nb
-import grid
 import util
 
 pg.init()
@@ -23,12 +22,9 @@ screen = pg.display.set_mode(SCREEN_SIZE)
 ##############################################################################
 
 # Main sprite group
-Agents = sc.getScenario(sc.type.TWO, gameSettings)
+Agents = sc.getScenario(sc.type.CLASSIC)
 
 co.init(Agents, gameSettings)
-
-# Spatial partitioning grid
-g = grid.init(WIDTH,HEIGHT,Agents.sprites())
 
 screen.fill(BACKGROUND_COLOR)
 # Fading trails
@@ -51,7 +47,7 @@ while not done:
     # For pretty fading trails
     screen.blit(bg, (0,0))
     
-    # co.update()
+    co.update()
     Agents.update()
     Agents.draw(screen)
               
