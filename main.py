@@ -6,8 +6,8 @@ pg.init()
 
 # PyGame parameters
 ##############################################################################
-WIDTH = 3500
-HEIGHT = 2000
+WIDTH  = (100) * 32
+HEIGHT = (100) * 16
 SPEED = 3
 PARALLEL = 0
 gameSettings = util.Settings(WIDTH, HEIGHT, SPEED, PARALLEL)
@@ -44,6 +44,7 @@ while not done:
 
     # For pretty fading trails
     screen.blit(bg, (0,0))
+    # screen.fill(BACKGROUND_COLOR)
     
     co.update()
     Agents.update()

@@ -24,7 +24,7 @@ def getScenario(index):
     Agents = pg.sprite.Group()
     if index == scenario.CLASSIC:
         Greens = pg.sprite.Group()
-        for index in range(100):
+        for index in range(1000):
             Greens.add(sprites.Sprite(sprites.Species.CYAN, index))
         Agents.add(Greens.sprites())
         return Agents
