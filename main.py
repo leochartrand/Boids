@@ -3,7 +3,7 @@ import compute as co
 import util
 import datetime
 from OpenGL.GL import *
-import OpenGL.GLU
+import ctypes
 
 pg.init()
 
@@ -19,24 +19,18 @@ SCREEN_SIZE = (gameSettings.WIDTH, gameSettings.HEIGHT)
 BACKGROUND_COLOR = (30,30,30)
 gameGlock = pg.time.Clock()
 pg.display.set_caption("CUDA Boids")
-screen = pg.display.set_mode(SCREEN_SIZE)
-# screen = pg.display.set_mode(SCREEN_SIZE, pg.OPENGL|pg.DOUBLEBUF)
+screen = pg.display.set_mode(SCREEN_SIZE, pg.OPENGL|pg.DOUBLEBUF)
 ##############################################################################
+glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+glEnable( GL_BLEND )
+# shader = util.initShader()
+# glUseProgram(shader)
 
-# Main sprite group
-Agents = util.getScenario(util.scenario.CLASSIC)
+co.init(16384, gameSettings)
 
-co.init(Agents, gameSettings)
-
-screen.fill(BACKGROUND_COLOR)
-# Fading trails
-bg = pg.Surface((WIDTH,HEIGHT))
-bg.set_alpha(32)
-bg.fill(BACKGROUND_COLOR)
-glClearColor(0.125,0.125,0.125,1)
-
-clockFont = pg.font.SysFont("Arial", 50)
-
+w = WIDTH/2
+h = HEIGHT/2
+numIndices = co.numBoids*2
 # Main loop
 # Based on official docs:
 # https://www.pygame.org/docs/ref/draw.html
@@ -46,25 +40,44 @@ while not done:
         if event.type == pg.QUIT or event.type == pg.K_ESCAPE: 
               done = True 
 
-
-    # glClear(GL_COLOR_BUFFER_BIT)
-
-    # For pretty fading trails
-    screen.blit(bg, (0,0))
-    # screen.fill(BACKGROUND_COLOR)
+    glBegin(GL_POLYGON)
+    glColor4f(0.125,0.125,0.125,0.1)
+    glVertex2f(-1.0,-1.0)
+    glVertex2f(-1.0,1.0)
+    glVertex2f(1.0,1.0)
+    glVertex2f(1.0,-1.0)
+    glEnd()
     
     co.update()
 
+    glBegin(GL_POINTS)
+
     start_time = datetime.datetime.now()
-    Agents.update()
-    Agents.draw(screen)
+    array = co.outBuffer
+    # vao = glGenVertexArrays(1)
+    # glBindVertexArray(vao)
+    # vbo = glGenBuffers(1)
+    # glBindBuffer(GL_ARRAY_BUFFER, vbo)
+    # glBufferData(GL_ARRAY_BUFFER, array.nbytes, array, GL_STATIC_DRAW)
+    # glEnableVertexAttribArray(0)
+    # glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE, 8, ctypes.c_void_p(0))
+    # glUseProgram(shader)
+    # glBindVertexArray(vao)
+    # glColor3f(0.6,1.0,1.0)
+    # glDrawArrays(GL_POINTS, 0, numIndices)
+    for x,y in zip(array[:,0], array[:,1]):
+        # x, y = agent.allo()
+        glColor3f(0.6, 1.0, 1.0)
+        glVertex2f(x,y)
     end_time = datetime.datetime.now()
     time_diff = (end_time - start_time)
-    # print("draw:",time_diff.total_seconds() * 1000)
+    print("draw:",time_diff.total_seconds() * 1000)
+    glEnd()
 
     tickTime = gameGlock.tick()
-    screen.blit(clockFont.render(str(tickTime), 1, pg.Color("white")), (10,0))
-              
+     
     pg.display.flip()
+    glFlush()
 # Quits when game is over
+# glDeleteProgram(shader)
 pg.quit()
