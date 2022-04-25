@@ -27,22 +27,25 @@ def init(settings):
     #######################################
     # Arrays
     #######################################
-    global renderBuffer, inBuffer, outBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable, tileOffsetTable
+    global renderBuffer, boidBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable, tileOffsetTable
     renderBuffer = np.zeros((POPULATION, 2), dtype=np.float32)
-    inBuffer = np.zeros((POPULATION, 4), dtype=np.float32)
-    outBuffer = np.zeros((POPULATION, 4), dtype=np.float32)
     dirBuffer = cuda.to_device(np.zeros((POPULATION, 27), dtype=np.float32))
+    tempBoidBuffer = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
-        inBuffer[i,0] = rd.uniform(0, WIDTH)
-        inBuffer[i,1] = rd.uniform(0, HEIGHT)
-        inBuffer[i,2] = rd.random()*2-1
-        inBuffer[i,3] = rd.random()*2-1
-    tileIndexTable = np.zeros(GRID_WIDTH*GRID_HEIGHT, dtype=np.int32)
+        tempBoidBuffer[i,0] = rd.uniform(0, WIDTH)
+        tempBoidBuffer[i,1] = rd.uniform(0, HEIGHT)
+        tempBoidBuffer[i,2] = rd.random()*2-1
+        tempBoidBuffer[i,3] = rd.random()*2-1
+    boidBuffer = cuda.to_device(tempBoidBuffer)
+    # Tables
+    # Boid Table - List of every boid and their current tile, sorted by tile
     boidTable = np.zeros((POPULATION,2), dtype=np.int32)
     for index, cell in enumerate(boidTable):
         cell[0] = index
-    # Look-Up table
-    tempLookUpTable = np.zeros((GRID_WIDTH*GRID_HEIGHT,9), dtype=int)
+    # Tile Index Table (gives start index of tile on sorted Boid Table)
+    tileIndexTable = np.zeros(GRID_WIDTH*GRID_HEIGHT, dtype=np.int32)
+    # Look-Up table (for neighbor tiles - read only)
+    tempLookUpTable = np.zeros((GRID_WIDTH*GRID_HEIGHT,9), dtype=np.int32)
     tileOffset = {-1, 0, 1}
     for index, cell in enumerate(tempLookUpTable):
         x = index % GRID_WIDTH
@@ -52,65 +55,82 @@ def init(settings):
             for j in tileOffset:
                 cell[col] = (x + i)%GRID_WIDTH + (y + j)%GRID_HEIGHT * GRID_WIDTH
                 col += 1
-    lookUpTable = cuda.to_device(tempLookUpTable)
-    # Tile Offset Table (for distance check w/ edge wrapping)
-    tempTileOffsetTable = np.empty((9,2), dtype=np.int32)
-    tileValues = (-1, 0, 1)
-    totIndex = 0
-    for i in tileValues:
-        for j in tileValues:
-            tempTileOffsetTable[totIndex,0] = i * GRID_WIDTH
-            tempTileOffsetTable[totIndex,1] = j * GRID_HEIGHT
-            totIndex += 1
-    tileOffsetTable = cuda.to_device(tempTileOffsetTable)
-    
+    lookUpTable = cuda.to_device(tempLookUpTable)    
 
 #######################################
 # Update
 #######################################
 def update():
-    start_time = datetime.datetime.now()
-    #
-    global renderBuffer, dirBuffer, inBuffer, outBuffer, lookUpTable, boidTable, tileOffsetTable, tileIndexTable
+    # Kernels are set to default stream and are executed sequentially
+    global renderBuffer, dirBuffer, boidBuffer, lookUpTable, boidTable, tileIndexTable
     nthreads = 512
     nblocks = (POPULATION + (nthreads - 1)) // nthreads
-    fillBoidTable[nblocks, nthreads](inBuffer, boidTable, GRID_CELL_SIZE, GRID_WIDTH, GRID_HEIGHT)
+    fillBoidTable[nblocks, nthreads](boidBuffer, boidTable)
     prepareTables()
-    getBoidDataFromTile[(nblocks,9), (nthreads,1)](inBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable, tileOffsetTable, POPULATION)
-    writeToBuffer[nblocks, nthreads](inBuffer, outBuffer, renderBuffer, dirBuffer, POPULATION)
-    np.copyto(inBuffer, outBuffer)
-    #
-    end_time = datetime.datetime.now()
-    time_diff = (end_time - start_time)
-    # print("para:",time_diff.total_seconds() * 1000)
+    # start_time = datetime.datetime.now()
+    getBoidDataFromTile[(nblocks,9), (nthreads,1)](boidBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable)
+    # end_time = datetime.datetime.now()
+    # time_diff = (end_time - start_time)
+    # print("read:",time_diff.total_seconds() * 1000)
+    # GPU waits for previous kernel to finish
+    writeToBuffer[nblocks, nthreads](boidBuffer, renderBuffer, dirBuffer)
 
+# TODO sort GPU
 def prepareTables():
     global tileIndexTable, boidTable
+    # start_time = datetime.datetime.now()
     boidTable = boidTable[boidTable[:,1].argsort()]
+    # end_time = datetime.datetime.now()
+    # time_diff = (end_time - start_time)
+    # print("sort:",time_diff.total_seconds() * 1000)
+    # start_time = datetime.datetime.now()
     tileIndexTable.fill(-1)
     currentIndex = -1
     for index, cell in enumerate(boidTable):
         if currentIndex != cell[1]:
             currentIndex = cell[1]
             tileIndexTable[currentIndex] = index
+    # end_time = datetime.datetime.now()
+    # time_diff = (end_time - start_time)
+    # print("fill:",time_diff.total_seconds() * 1000)
 
 #######################################
 # Parallel
 #######################################
+
+# Update Boid Table with new tile for every agent
 @cuda.jit
-def fillBoidTable(inBuffer, boidTable, GRID_CELL_SIZE, GRID_WIDTH, GRID_HEIGHT):
+def fillBoidTable(boidBuffer, boidTable):
     index = cuda.grid(1)
-    x = int(inBuffer[index,0]//GRID_CELL_SIZE) % GRID_WIDTH
-    y = int(inBuffer[index,1]//GRID_CELL_SIZE) % GRID_HEIGHT
+    if index >= POPULATION:
+        return
+    x = int(boidBuffer[index,0]//GRID_CELL_SIZE) % GRID_WIDTH
+    y = int(boidBuffer[index,1]//GRID_CELL_SIZE) % GRID_HEIGHT
     gridIndex = x + y * GRID_WIDTH
     boidTable[index,1] = gridIndex
 
+#TODO FINISH
 @cuda.jit
-def getBoidDataFromTile(inBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable, tileOffsetTable, POPULATION):
+def fillTileIndexTable(boidTable, tileIndexTable):
+    index = cuda.grid(1)
+    if index >= POPULATION:
+        return
+    currentIndex = -1
+    if currentIndex != boidTable[index,1]:
+        currentIndex = boidTable[index,1]
+        tileIndexTable[currentIndex] = index
+
+# For a certain agent and a certain tile in the agent's neighboring tiles
+# Get neighbor data and compute new direction vector with weight
+# Boidbuffer -> DirBuffer
+@cuda.jit
+def getBoidDataFromTile(boidBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable):
     lookUpIndex = cuda.blockIdx.y
     index = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    if index >= POPULATION:
+        return
     # Current  position
-    x, y = inBuffer[index,0], inBuffer[index,1]
+    x, y = boidBuffer[index,0], boidBuffer[index,1]
     # Boid direction
     dx, dy = 0.0, 0.0
     numNeighbors = 0
@@ -132,13 +152,16 @@ def getBoidDataFromTile(inBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTa
         while value == tile and startIndex < POPULATION:
             agent = boidTable[startIndex,0]
             startIndex += 1
-            value = boidTable[startIndex,1]
-            ax = inBuffer[agent,0]
-            ay = inBuffer[agent,1]
-            adx = inBuffer[agent,2]
-            ady = inBuffer[agent,3]
+            if startIndex == POPULATION:
+                value = -1
+            else:
+                value = boidTable[startIndex,1]
+            ax = boidBuffer[agent,0]
+            ay = boidBuffer[agent,1]
+            adx = boidBuffer[agent,2]
+            ady = boidBuffer[agent,3]
             if onEdge:
-                isNb = isNeighborEdge(x,y,ax,ay,tileOffsetTable)
+                isNb = isNeighborEdge(x,y,ax,ay)
             else: 
                 isNb = (math.sqrt((x - ax)**2 + (y - ay)**2) < NEIGHBOR_DIST)
             if agent != index and isNb:
@@ -195,16 +218,17 @@ def getBoidDataFromTile(inBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTa
     dirBuffer[index, lookUpIndex*3+1] = dy
     dirBuffer[index, lookUpIndex*3+2] = numNeighbors
 
+# Reads direction vectors and weights for all neighbor tile calculations
+# Gets final direction and position and writes to memory
+# DirBuffer -> RenderBuffer, BoidBuffer
 @cuda.jit
-def writeToBuffer(inBuffer, outBuffer, renderBuffer, dirBuffer, POPULATION):
+def writeToBuffer(boidBuffer, renderBuffer, dirBuffer):
     index = cuda.grid(1)
     if index >= POPULATION:
         return
-    # READ SHARED MEMORY - NO WRITING
-    x, y = inBuffer[index,0], inBuffer[index,1]
+    x, y = boidBuffer[index,0], boidBuffer[index,1]
     # Previous direction
-    pdx, pdy = inBuffer[index,2], inBuffer[index,3]
-
+    pdx, pdy = boidBuffer[index,2], boidBuffer[index,3]
     dx = 0.0
     dy = 0.0
     total = 0
@@ -235,23 +259,27 @@ def writeToBuffer(inBuffer, outBuffer, renderBuffer, dirBuffer, POPULATION):
     elif y < 0 :
         y = HEIGHT
     # Render coordinates
-    rx = x - HALF_WIDTH
-    ry = y - HALF_HEIGHT
-    rx /= HALF_WIDTH
-    ry /= HALF_HEIGHT
-    # WRITE TO SHARED MEMORY - WAIT SYNC
-    cuda.syncthreads()
+    rx = (x - HALF_WIDTH) / HALF_WIDTH
+    ry = (y - HALF_HEIGHT) / HALF_HEIGHT
+    # WRITE TO MEMORY
+    # Write screen position in [-1,1]
     renderBuffer[index,0] = rx
     renderBuffer[index,1] = ry
-    outBuffer[index,0] = x
-    outBuffer[index,1] = y
-    outBuffer[index,2] = dx
-    outBuffer[index,3] = dy
+    # Store data for next calculation
+    boidBuffer[index,0] = x
+    boidBuffer[index,1] = y
+    boidBuffer[index,2] = dx
+    boidBuffer[index,3] = dy
 
+# TODO optimize this bit -> VERY EXPENSIVE
+# If agent is near an edge
+# Checks if other agent is a neighbor for all neighboring tile configurations (9)
 @cuda.jit(device=True)
-def isNeighborEdge(x,y,ax,ay,tileOffsetTable):
-    for offset in tileOffsetTable:
-            if math.sqrt((x - (ax + offset[0]))**2 + (y - (ay + offset[1]))**2) < 100:
+def isNeighborEdge(x,y,ax,ay):
+    tileOffset = (-1,0,1)
+    for i in tileOffset:
+        for j in tileOffset:
+            if math.sqrt((x - (ax + i))**2 + (y - (ay + j))**2) < 100:
                 return True
     return False
 
