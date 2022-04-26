@@ -1,29 +1,30 @@
-import numpy as np
-import random as rd
 from numba import cuda
+import numpy as np
+import cupy as cp
+import random as rd
 import math
-import datetime
 
 def init(settings):
     #######################################
     # Constants
     #######################################
-    global POPULATION, COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, SEPARATION_DIST
+    global POPULATION, COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED, WRAP_AROUND
     global WIDTH, HEIGHT, HALF_WIDTH, HALF_HEIGHT, SPEED, PARALLEL, GRID_CELL_SIZE, GRID_WIDTH, GRID_HEIGHT
     POPULATION = settings.POPULATION
     SPEED = settings.SPEED
     COHESION = settings.COHESION
     ALIGNMENT = settings.ALIGNMENT
     SEPARATION = settings.SEPARATION
-    NEIGHBOR_DIST = settings.NEIGHBOR_DIST
-    SEPARATION_DIST = settings.SEPARATION_DIST
+    NEIGHBOR_DIST_SQUARED = settings.NEIGHBOR_DIST ** 2 # Useful for evaluating distances
+    SEPARATION_DIST_SQUARED = settings.SEPARATION_DIST ** 2
     WIDTH = settings.WIDTH
     HEIGHT = settings.HEIGHT
     HALF_WIDTH = WIDTH/2
     HALF_HEIGHT = HEIGHT/2
-    GRID_CELL_SIZE = NEIGHBOR_DIST
+    GRID_CELL_SIZE = settings.NEIGHBOR_DIST
     GRID_WIDTH = WIDTH//GRID_CELL_SIZE
     GRID_HEIGHT = HEIGHT//GRID_CELL_SIZE
+    WRAP_AROUND = settings.WRAP_AROUND
     #######################################
     # Arrays
     #######################################
@@ -39,11 +40,15 @@ def init(settings):
     boidBuffer = cuda.to_device(tempBoidBuffer)
     # Tables
     # Boid Table - List of every boid and their current tile, sorted by tile
-    boidTable = np.zeros((POPULATION,2), dtype=np.int32)
-    for index, cell in enumerate(boidTable):
+    tempBoidTable = np.zeros((POPULATION,2), dtype=np.int32)
+    for index, cell in enumerate(tempBoidTable):
         cell[0] = index
+    # Sends array to GPU with CuPy instead of numba, to use CuPy methods
+    boidTable = cp.asarray(tempBoidTable)
+    # Tables
     # Tile Index Table (gives start index of tile on sorted Boid Table)
     tileIndexTable = np.zeros(GRID_WIDTH*GRID_HEIGHT, dtype=np.int32)
+    # Tables
     # Look-Up table (for neighbor tiles - read only)
     tempLookUpTable = np.zeros((GRID_WIDTH*GRID_HEIGHT,9), dtype=np.int32)
     tileOffset = {-1, 0, 1}
@@ -61,38 +66,22 @@ def init(settings):
 # Update
 #######################################
 def update():
-    # Kernels are set to default stream and are executed sequentially
     global renderBuffer, dirBuffer, boidBuffer, lookUpTable, boidTable, tileIndexTable
+    # Kernels are set to default stream and are executed sequentially
+    # 512 threads per block, as many blocks as we need 
     nthreads = 512
     nblocks = (POPULATION + (nthreads - 1)) // nthreads
     fillBoidTable[nblocks, nthreads](boidBuffer, boidTable)
-    prepareTables()
-    # start_time = datetime.datetime.now()
+    # CuPy sort, a bit faster than on CPU
+    boidTable = boidTable[cp.argsort(boidTable[:,1])]
+    # New index table according to data from sorted boid table
+    tileIndexTable.fill(-1)
+    fillTileIndexTable[nblocks, nthreads](boidTable, tileIndexTable)
+    # 2D kernel. X axis is boids, Y axis is each of their 9 respective neighbor tiles
     getBoidDataFromTile[(nblocks,9), (nthreads,1)](boidBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable)
-    # end_time = datetime.datetime.now()
-    # time_diff = (end_time - start_time)
-    # print("read:",time_diff.total_seconds() * 1000)
-    # GPU waits for previous kernel to finish
+    # Once previous kernel is finished, gets data from dirBuffer and writes to renderBuffer and boidBuffer
     writeToBuffer[nblocks, nthreads](boidBuffer, renderBuffer, dirBuffer)
 
-# TODO sort GPU
-def prepareTables():
-    global tileIndexTable, boidTable
-    # start_time = datetime.datetime.now()
-    boidTable = boidTable[boidTable[:,1].argsort()]
-    # end_time = datetime.datetime.now()
-    # time_diff = (end_time - start_time)
-    # print("sort:",time_diff.total_seconds() * 1000)
-    # start_time = datetime.datetime.now()
-    tileIndexTable.fill(-1)
-    currentIndex = -1
-    for index, cell in enumerate(boidTable):
-        if currentIndex != cell[1]:
-            currentIndex = cell[1]
-            tileIndexTable[currentIndex] = index
-    # end_time = datetime.datetime.now()
-    # time_diff = (end_time - start_time)
-    # print("fill:",time_diff.total_seconds() * 1000)
 
 #######################################
 # Parallel
@@ -109,16 +98,18 @@ def fillBoidTable(boidBuffer, boidTable):
     gridIndex = x + y * GRID_WIDTH
     boidTable[index,1] = gridIndex
 
-#TODO FINISH
+# Update Index Table to give start index for every tile on tileIndexTable
 @cuda.jit
 def fillTileIndexTable(boidTable, tileIndexTable):
     index = cuda.grid(1)
     if index >= POPULATION:
         return
-    currentIndex = -1
-    if currentIndex != boidTable[index,1]:
-        currentIndex = boidTable[index,1]
-        tileIndexTable[currentIndex] = index
+    gridIndex = boidTable[index,1]
+    if index > 0:
+        previousGridIndex = boidTable[index-1,1]
+        if previousGridIndex == gridIndex:
+            return
+    tileIndexTable[gridIndex] = index
 
 # For a certain agent and a certain tile in the agent's neighboring tiles
 # Get neighbor data and compute new direction vector with weight
@@ -139,7 +130,7 @@ def getBoidDataFromTile(boidBuffer, dirBuffer, lookUpTable, tileIndexTable, boid
     separationX, separationY = 0.0, 0.0
     numSeparation = 0
     #Check if close to edge (for distanche check)
-    if x < 100 or y < 100 or WIDTH - x < 100 or HEIGHT - y < 100:
+    if WRAP_AROUND and (x < 100 or y < 100 or WIDTH - x < 100 or HEIGHT - y < 100):
         onEdge = True
     else: 
         onEdge = False
@@ -161,10 +152,10 @@ def getBoidDataFromTile(boidBuffer, dirBuffer, lookUpTable, tileIndexTable, boid
             adx = boidBuffer[agent,2]
             ady = boidBuffer[agent,3]
             if onEdge:
-                isNb = isNeighborEdge(x,y,ax,ay)
+                isNeighbor = isNeighborEdge(x,y,ax,ay)
             else: 
-                isNb = (math.sqrt((x - ax)**2 + (y - ay)**2) < NEIGHBOR_DIST)
-            if agent != index and isNb:
+                isNeighbor = (((x - ax)**2 + (y - ay)**2) < NEIGHBOR_DIST_SQUARED)
+            if agent != index and isNeighbor:
                 numNeighbors += 1
                 alignmentX += adx
                 alignmentY += ady
@@ -172,11 +163,10 @@ def getBoidDataFromTile(boidBuffer, dirBuffer, lookUpTable, tileIndexTable, boid
                 cohesionY += ay
                 distX = x - ax
                 distY = y - ay
-                distLength = math.sqrt(distX**2 + distY**2)
-                sqrt = distLength ** 2
-                if distLength < SEPARATION_DIST:
-                    distX /= sqrt
-                    distY /= sqrt
+                distLength = distX**2 + distY**2
+                if distLength < SEPARATION_DIST_SQUARED:
+                    distX /= distLength
+                    distY /= distLength
                     separationX += distX
                     separationY += distY
                     numSeparation += 1
@@ -240,6 +230,32 @@ def writeToBuffer(boidBuffer, renderBuffer, dirBuffer):
     if total > 0:
         dx /= total
         dy /= total
+    # If Edge Wrapping is off, avoid walls
+    MARGIN = 200
+    if not WRAP_AROUND:
+        wallX, wallY = 0.0, 0.0
+        x2 = WIDTH - x 
+        y2 = HEIGHT - y
+        if x < MARGIN:
+            wallX = MARGIN - x
+            wallX /= MARGIN
+            wallX = wallX ** 2
+        elif x2 < MARGIN:
+            wallX = MARGIN - x2
+            wallX /= MARGIN
+            wallX = wallX ** 2
+            wallX *= -1
+        if y < MARGIN:
+            wallY = MARGIN - y
+            wallY /= MARGIN
+            wallY = wallY ** 2
+        elif y2 < MARGIN:
+            wallY = MARGIN - y2
+            wallY /= MARGIN
+            wallY = wallY ** 2
+            wallY *= -1
+        dx += wallX /10
+        dy += wallY /10
     # Update directions
     dx = pdx + dx * 3 # Weight w, ratio of 1:w with old/new direction
     dy = pdy + dy * 3
@@ -250,14 +266,15 @@ def writeToBuffer(boidBuffer, renderBuffer, dirBuffer):
     x += dx * SPEED
     y += dy * SPEED
     # Edge wrap
-    if x > WIDTH:
-        x = 0
-    elif x < 0 :
-        x = WIDTH
-    if y > HEIGHT:
-        y = 0
-    elif y < 0 :
-        y = HEIGHT
+    if WRAP_AROUND:
+        if x > WIDTH:
+            x = 0
+        elif x < 0 :
+            x = WIDTH
+        if y > HEIGHT:
+            y = 0
+        elif y < 0 :
+            y = HEIGHT
     # Render coordinates
     rx = (x - HALF_WIDTH) / HALF_WIDTH
     ry = (y - HALF_HEIGHT) / HALF_HEIGHT
@@ -271,15 +288,14 @@ def writeToBuffer(boidBuffer, renderBuffer, dirBuffer):
     boidBuffer[index,2] = dx
     boidBuffer[index,3] = dy
 
-# TODO optimize this bit -> VERY EXPENSIVE
 # If agent is near an edge
 # Checks if other agent is a neighbor for all neighboring tile configurations (9)
+# Looks for minimal toroidal distance
 @cuda.jit(device=True)
 def isNeighborEdge(x,y,ax,ay):
-    tileOffset = (-1,0,1)
-    for i in tileOffset:
-        for j in tileOffset:
-            if math.sqrt((x - (ax + i))**2 + (y - (ay + j))**2) < 100:
-                return True
+    mix = min(abs(x - ax - WIDTH), abs(x - ax), abs(x - ax + WIDTH))
+    miy = min(abs(y - ay - HEIGHT), abs(y - ay), abs(y - ay + HEIGHT))
+    if ((mix)**2 + (miy)**2) < NEIGHBOR_DIST_SQUARED:
+        return True
     return False
 

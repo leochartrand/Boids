@@ -18,6 +18,7 @@ class Settings:
     SEPARATION_DIST : int
     WIDTH           : int
     HEIGHT          : int
+    WRAP_AROUND     : bool
 
 def init(pop):
     global shader, bgShader, popSize
@@ -33,8 +34,6 @@ def init(pop):
     shader = compileProgram(
         compileShader(vShader, GL_VERTEX_SHADER),
         compileShader(fShader, GL_FRAGMENT_SHADER))
-    with open("shaders/bg_vs.glsl", 'r') as f:
-        vShader = f.readlines()
     with open("shaders/bg_fs.glsl", 'r') as f:
         fShader = f.readlines()
     bgShader = compileProgram(

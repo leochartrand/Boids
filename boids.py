@@ -5,14 +5,13 @@ import parallel as par
 import sequential as seq
 import util
 from OpenGL.GL import *
-import ctypes
 
 pg.init()
 
 ##############################################################################
 # Simulation parameters
 PARALLEL = True
-POPULATION = 65536
+POPULATION = 100000
 WIDTH  = (100) * 36
 HEIGHT = (100) * 20
 SPEED = 2
@@ -21,8 +20,9 @@ ALIGNMENT = 0.2
 SEPARATION = 0.1
 NEIGHBOR_DIST = 100
 SEPARATION_DIST = 50
-gameSettings = util.Settings(POPULATION, SPEED, COHESION, 
-    ALIGNMENT, SEPARATION, NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT)
+WRAP_AROUND = True
+gameSettings = util.Settings(POPULATION, SPEED, COHESION, ALIGNMENT, 
+    SEPARATION, NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND)
 ##############################################################################
 # PyGame/OpenGL parameters
 SCREEN_SIZE = (gameSettings.WIDTH, gameSettings.HEIGHT)
