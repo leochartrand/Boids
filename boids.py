@@ -1,6 +1,4 @@
-from pickle import POP
 import pygame as pg
-import numpy as np
 import parallel as par
 import sequential as seq
 import util
@@ -12,15 +10,17 @@ pg.init()
 # Simulation parameters
 PARALLEL = True
 POPULATION = 100000
-WIDTH  = (100) * 36
-HEIGHT = (100) * 20
 SPEED = 2
 COHESION = 0.01
 ALIGNMENT = 0.2
 SEPARATION = 0.1
-NEIGHBOR_DIST = 100
+NEIGHBOR_DIST = 100 # Ideally kept at 100
 SEPARATION_DIST = 50
 WRAP_AROUND = True
+# Window size
+WIDTH  = (NEIGHBOR_DIST) * 36
+HEIGHT = (NEIGHBOR_DIST) * 20
+#
 gameSettings = util.Settings(POPULATION, SPEED, COHESION, ALIGNMENT, 
     SEPARATION, NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND)
 ##############################################################################
@@ -35,15 +35,13 @@ render = util.render
 
 if PARALLEL:
     par.init(gameSettings)
-    renderBuffer = par.renderBuffer
+    renderData = par.renderData
     update = par.update
 else:
     seq.init(gameSettings)
-    renderBuffer = seq.renderBuffer
+    renderData = seq.renderData
     update = seq.update
 
-# Main loop, Based on official docs:
-# https://www.pygame.org/docs/ref/draw.html
 done = False
 while not done:
     for event in pg.event.get(): 
@@ -52,7 +50,7 @@ while not done:
 
     update()
 
-    util.render(renderBuffer)
+    util.render(renderData)
 
     tickTime = gameGlock.tick()
     # print(tickTime)

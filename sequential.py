@@ -25,19 +25,19 @@ def init(settings):
     #######################################
     # Arrays
     #######################################
-    global renderBuffer, inBuffer, outBuffer, dirBuffer, lookUpTable, tileIndexTable, boidTable, tileOffsetTable
-    renderBuffer = np.zeros((POPULATION, 2), dtype=np.float32)
-    inBuffer = np.zeros((POPULATION, 4), dtype=np.float32)
-    outBuffer = np.zeros((POPULATION, 4), dtype=np.float32)
-    dirBuffer = np.zeros((POPULATION, 27), dtype=np.float32)
+    global renderData, inBoidData, outBoidData, neighborTileData, lookUpTable, tileIndexTable, boidPositionTable
+    renderData = np.zeros((POPULATION, 2), dtype=np.float32)
+    inBoidData = np.zeros((POPULATION, 4), dtype=np.float32)
+    outBoidData = np.zeros((POPULATION, 4), dtype=np.float32)
+    neighborTileData = np.zeros((POPULATION, 27), dtype=np.float32)
     for i in range(POPULATION):
-        inBuffer[i,0] = rd.uniform(0, WIDTH)
-        inBuffer[i,1] = rd.uniform(0, HEIGHT)
-        inBuffer[i,2] = rd.random()*2-1
-        inBuffer[i,3] = rd.random()*2-1
+        inBoidData[i,0] = rd.uniform(0, WIDTH)
+        inBoidData[i,1] = rd.uniform(0, HEIGHT)
+        inBoidData[i,2] = rd.random()*2-1
+        inBoidData[i,3] = rd.random()*2-1
     tileIndexTable = np.zeros(GRID_WIDTH*GRID_HEIGHT, dtype=np.int32)
-    boidTable = np.zeros((POPULATION,2), dtype=np.int32)
-    for index, cell in enumerate(boidTable):
+    boidPositionTable = np.zeros((POPULATION,2), dtype=np.int32)
+    for index, cell in enumerate(boidPositionTable):
         cell[0] = index
     # Look-Up table
     lookUpTable = np.zeros((GRID_WIDTH*GRID_HEIGHT,9), dtype=int)
@@ -50,15 +50,6 @@ def init(settings):
             for j in tileOffset:
                 cell[col] = (x + i)%GRID_WIDTH + (y + j)%GRID_HEIGHT * GRID_WIDTH
                 col += 1
-    # Tile Offset Table (for distance check w/ edge wrapping)
-    tileOffsetTable = np.empty((9,2), dtype=np.int32)
-    tileValues = (-1, 0, 1)
-    totIndex = 0
-    for i in tileValues:
-        for j in tileValues:
-            tileOffsetTable[totIndex,0] = i * GRID_WIDTH
-            tileOffsetTable[totIndex,1] = j * GRID_HEIGHT
-            totIndex += 1
 
 #######################################
 # Update
@@ -66,39 +57,39 @@ def init(settings):
 def update():
     start_time = datetime.datetime.now()
     #
-    global inBuffer, outBuffer
+    global inBoidData, outBoidData
     fillBoidTable()
     prepareTables()
     for index in range(POPULATION):
         getBoidDataFromTile(index)
-    np.copyto(inBuffer, outBuffer)
+    np.copyto(inBoidData, outBoidData)
     #
     end_time = datetime.datetime.now()
     time_diff = (end_time - start_time)
     # print("para:",time_diff.total_seconds() * 1000)
 
 def prepareTables():
-    global tileIndexTable, boidTable
-    boidTable = boidTable[boidTable[:,1].argsort()]
+    global tileIndexTable, boidPositionTable
+    boidPositionTable = boidPositionTable[boidPositionTable[:,1].argsort()]
     tileIndexTable.fill(-1)
     currentIndex = -1
-    for index, cell in enumerate(boidTable):
+    for index, cell in enumerate(boidPositionTable):
         if currentIndex != cell[1]:
             currentIndex = cell[1]
             tileIndexTable[currentIndex] = index
 
 def fillBoidTable():
-    global inBuffer, boidTable
+    global inBoidData, boidPositionTable
     for index in range(POPULATION):
-        x = int(inBuffer[index,0]//GRID_CELL_SIZE) % GRID_WIDTH
-        y = int(inBuffer[index,1]//GRID_CELL_SIZE) % GRID_HEIGHT
+        x = int(inBoidData[index,0]//GRID_CELL_SIZE) % GRID_WIDTH
+        y = int(inBoidData[index,1]//GRID_CELL_SIZE) % GRID_HEIGHT
         gridIndex = x + y * GRID_WIDTH
-        boidTable[index,1] = gridIndex
+        boidPositionTable[index,1] = gridIndex
 
 def getBoidDataFromTile(index):
-    global renderBuffer, inBuffer, lookUpTable, boidTable, tileIndexTable
+    global renderData, inBoidData, lookUpTable, boidPositionTable, tileIndexTable
     # Current  position
-    x, y = inBuffer[index,0], inBuffer[index,1]
+    x, y = inBoidData[index,0], inBoidData[index,1]
     # Boid direction
     dx, dy = 0.0, 0.0
     numNeighbors = 0
@@ -118,13 +109,13 @@ def getBoidDataFromTile(index):
         if startIndex != -1:
             value = tile
             while value == tile and startIndex < POPULATION - 1:
-                agent = boidTable[startIndex,0]
+                agent = boidPositionTable[startIndex,0]
                 startIndex += 1
-                value = boidTable[startIndex,1]
-                ax = inBuffer[agent,0]
-                ay = inBuffer[agent,1]
-                adx = inBuffer[agent,2]
-                ady = inBuffer[agent,3]
+                value = boidPositionTable[startIndex,1]
+                ax = inBoidData[agent,0]
+                ay = inBoidData[agent,1]
+                adx = inBoidData[agent,2]
+                ady = inBoidData[agent,3]
                 if onEdge:
                     isNb = isNeighborEdge(x,y,ax,ay)
                 else: 
@@ -179,8 +170,8 @@ def getBoidDataFromTile(index):
         dx += separationX * SEPARATION
         dy += separationY * SEPARATION
         # Update directions
-    dx = inBuffer[index,2] + dx * 3 # Weight w, ratio of 1:w with old/new direction
-    dy = inBuffer[index,3] + dy * 3
+    dx = inBoidData[index,2] + dx * 3 # Weight w, ratio of 1:w with old/new direction
+    dy = inBoidData[index,3] + dy * 3
     # Clamp speed
     l = math.sqrt(dx**2 + dy**2)
     dx, dy = dx / l, dy / l
@@ -202,16 +193,17 @@ def getBoidDataFromTile(index):
     rx /= HALF_WIDTH
     ry /= HALF_HEIGHT
     # WRITE TO OUTBUFFER
-    renderBuffer[index,0] = rx
-    renderBuffer[index,1] = ry
-    outBuffer[index,0] = x
-    outBuffer[index,1] = y
-    outBuffer[index,2] = dx
-    outBuffer[index,3] = dy
+    renderData[index,0] = rx
+    renderData[index,1] = ry
+    outBoidData[index,0] = x
+    outBoidData[index,1] = y
+    outBoidData[index,2] = dx
+    outBoidData[index,3] = dy
 
 def isNeighborEdge(x,y,ax,ay):
-    for offset in tileOffsetTable:
-            if math.sqrt((x - (ax + offset[0]))**2 + (y - (ay + offset[1]))**2) < 100:
-                return True
+    mix = min(abs(x - ax - WIDTH), abs(x - ax), abs(x - ax + WIDTH))
+    miy = min(abs(y - ay - HEIGHT), abs(y - ay), abs(y - ay + HEIGHT))
+    if ((mix)**2 + (miy)**2) < NEIGHBOR_DIST**2:
+        return True
     return False
 
