@@ -9,7 +9,7 @@
 
 <p align="center" width="80%">
     <img width="100%" src="./doc/rules.png">
-    Figure 1 – The 3 fundamental rules<br>
+    <br>Figure 1 – The 3 fundamental rules<br>
 </p>
 
 An important aspect of this model is how agents evaluate their velocity depending on the behavior of local flockmates. When an agent evaluates its peers, it only considers a certain portion of the flock, i.e. agents within a certain radius (called *neighbors*). Thus, as they move, all boids will individually evaluate their own *neighborhood* and readjust their direction.
@@ -24,7 +24,7 @@ One solution to this problem is to use spatial partitioning. The simulation spac
 
 <p align="center" width="80%">
     <img width="33%" src="./doc/spatial_partitioning.png">
-    Figure 2 – Spatial partitioning : agents only consider boids that are positioned in the adjacent tiles to evaluate who are their neighbors<br>
+    <br>Figure 2 – Spatial partitioning : agents only consider boids that are positioned in the adjacent tiles to evaluate who are their neighbors<br>
 </p>
 
 ### Wrap-Around
@@ -32,7 +32,7 @@ The simulation features a *wrap-around* mechanism, which consists of connecting 
 
 <p align="center" width="80%">
     <img width="33%" src="./doc/wraparound_grid.png">
-    Figure 3 – Wrap-around edges on the spatial partitioning grid<br>
+    <br>Figure 3 – Wrap-around edges on the spatial partitioning grid<br>
 </p>
 
 ### Neighbor search
