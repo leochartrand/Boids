@@ -35,9 +35,9 @@ def init(settings):
     #######################################
     # Arrays
     #######################################
-    global renderData, boidData, neighborTileData, lookUpTable, tileIndexTable, boidPositionTable
+    global renderData, boidData, neighborCellData, lookUpTable, cellIndexTable, boidPositionTable
     renderData = np.zeros((POPULATION, 3), dtype=np.float32)
-    neighborTileData = cuda.to_device(np.zeros((POPULATION, 27), dtype=np.float32))
+    neighborCellData = cuda.to_device(np.zeros((POPULATION, 27), dtype=np.float32))
     tempBoidData = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
         tempBoidData[i,0] = rd.uniform(0, WIDTH)
@@ -46,25 +46,25 @@ def init(settings):
         tempBoidData[i,3] = rd.random()*2-1
     boidData = cuda.to_device(tempBoidData)
     # Tables
-    # Boid Table - List of every boid and their current tile, sorted by tile
+    # Boid Table - List of every boid and their current cell, sorted by cell
     tempBoidTable = np.zeros((POPULATION,2), dtype=np.int32)
     for index, cell in enumerate(tempBoidTable):
         cell[0] = index
     # Sends array to GPU with CuPy instead of numba, to use CuPy methods
     boidPositionTable = cp.asarray(tempBoidTable)
     # Tables
-    # Tile Index Table (gives start index of tile on sorted Boid Table)
-    tileIndexTable = np.zeros(GRID_WIDTH*GRID_HEIGHT, dtype=np.int32)
+    # Cell Index Table (gives start index of cell on sorted Boid Table)
+    cellIndexTable = np.zeros(GRID_WIDTH*GRID_HEIGHT, dtype=np.int32)
     # Tables
-    # Look-Up table (for neighbor tiles - read only)
+    # Look-Up table (for neighbor cells - read only)
     tempLookUpTable = np.zeros((GRID_WIDTH*GRID_HEIGHT,9), dtype=np.int32)
-    tileOffset = {-1, 0, 1}
+    cellOffset = {-1, 0, 1}
     for index, cell in enumerate(tempLookUpTable):
         x = index % GRID_WIDTH
         y = index //GRID_WIDTH
         col = 0
-        for i in tileOffset:
-            for j in tileOffset:
+        for i in cellOffset:
+            for j in cellOffset:
                 cell[col] = (x + i)%GRID_WIDTH + (y + j)%GRID_HEIGHT * GRID_WIDTH
                 col += 1
     lookUpTable = cuda.to_device(tempLookUpTable)    
@@ -74,7 +74,7 @@ def init(settings):
 #######################################
 def update(params):
     updateParams(params)
-    global renderData, neighborTileData, boidData, lookUpTable, boidPositionTable, tileIndexTable
+    global renderData, neighborCellData, boidData, lookUpTable, boidPositionTable, cellIndexTable
     # Kernels are set to default stream and are executed sequentially
     # 512 threads per block, as many blocks as we need 
     nthreads = 512
@@ -83,12 +83,12 @@ def update(params):
     # CuPy sort, a bit faster than on CPU
     boidPositionTable = boidPositionTable[cp.argsort(boidPositionTable[:,1])]
     # New index table according to data from sorted boid table
-    tileIndexTable.fill(-1)
-    fillTileIndexTable[nblocks, nthreads](boidPositionTable, tileIndexTable)
-    # 2D kernel. X axis is boids, Y axis is each of their 9 respective neighbor tiles
-    getBoidDataFromTile[(nblocks,9), (nthreads,1)](boidData, neighborTileData, lookUpTable, tileIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
+    cellIndexTable.fill(-1)
+    fillCellIndexTable[nblocks, nthreads](boidPositionTable, cellIndexTable)
+    # 2D kernel. X axis is boids, Y axis is each of their 9 respective neighbor cells
+    getBoidDataFromCell[(nblocks,9), (nthreads,1)](boidData, neighborCellData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
     # Once previous kernel is finished, gets data from dirBuffer and writes to renderBuffer and boidBuffer
-    writeData[nblocks, nthreads](boidData, renderData, neighborTileData, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
+    writeData[nblocks, nthreads](boidData, renderData, neighborCellData, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
 
 def updateParams(params):
     global POPULATION, SPEED, WRAP_AROUND, SPOTLIGHT
@@ -107,7 +107,7 @@ def updateParams(params):
 # Parallel
 #######################################
 
-# Update Boid Table with new tile for every agent
+# Update Boid Table with new cell for every agent
 @cuda.jit
 def fillBoidPositionTable(boidData, boidPositionTable, renderData):
     index = cuda.grid(1)
@@ -121,9 +121,9 @@ def fillBoidPositionTable(boidData, boidPositionTable, renderData):
     renderData[index, 2] = 0.0
 
 
-# Update Index Table to give start index for every tile on boidPositionTable
+# Update Index Table to give start index for every cell on boidPositionTable
 @cuda.jit
-def fillTileIndexTable(boidPositionTable, tileIndexTable):
+def fillCellIndexTable(boidPositionTable, cellIndexTable):
     index = cuda.grid(1)
     if index >= POPULATION:
         return
@@ -132,13 +132,13 @@ def fillTileIndexTable(boidPositionTable, tileIndexTable):
         previousGridIndex = boidPositionTable[index-1,1]
         if previousGridIndex == gridIndex:
             return
-    tileIndexTable[gridIndex] = index
+    cellIndexTable[gridIndex] = index
 
-# For a certain agent and a certain tile in the agent's neighboring tiles
+# For a certain agent and a certain cell in the agent's neighboring cells
 # Get neighbor data and compute new direction vector with weight
-# boidData -> neighborTileData
+# boidData -> neighborCellData
 @cuda.jit
-def getBoidDataFromTile(boidData, neighborTileData, lookUpTable, tileIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED):
+def getBoidDataFromCell(boidData, neighborCellData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED):
     lookUpIndex = cuda.blockIdx.y
     index = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     if index >= POPULATION:
@@ -159,18 +159,18 @@ def getBoidDataFromTile(boidData, neighborTileData, lookUpTable, tileIndexTable,
         onEdge = False
     # Get cell neighbors
     gridIndex = int(x//GRID_CELL_SIZE)%GRID_WIDTH + int(y//GRID_CELL_SIZE)%GRID_HEIGHT * GRID_WIDTH
-    tile = lookUpTable[gridIndex, lookUpIndex]
-    startIndex = tileIndexTable[tile]
-    if startIndex != -1: # True if there's at least one agent on the current tile
-        # Condition to check if there are more agents to observe on the tile
-        cond = tile
-        while cond == tile and startIndex < POPULATION:# and numNeighbors < 20:
+    cell = lookUpTable[gridIndex, lookUpIndex]
+    startIndex = cellIndexTable[cell]
+    if startIndex != -1: # True if there's at least one agent on the current cell
+        # Condition to check if there are more agents to observe on the cell
+        cond = cell
+        while cond == cell and startIndex < POPULATION:# and numNeighbors < 20:
             agent = boidPositionTable[startIndex,0]
             startIndex += 1
             # Check if at the end of table
             if startIndex >= POPULATION:
                 cond = -1
-            # Or set condition to check if all agents on the tile have been observed
+            # Or set condition to check if all agents on the cell have been observed
             else:
                 cond = boidPositionTable[startIndex,1]
             # Get agent data and check if it's a neighbor
@@ -238,16 +238,16 @@ def getBoidDataFromTile(boidData, neighborTileData, lookUpTable, tileIndexTable,
             # Add separation vector to direction
             dx += separationX * SEPARATION
             dy += separationY * SEPARATION
-    # Write to direction buffer at respective boid and tile index
-    neighborTileData[index, lookUpIndex*3] = dx
-    neighborTileData[index, lookUpIndex*3+1] = dy
-    neighborTileData[index, lookUpIndex*3+2] = numNeighbors
+    # Write to direction buffer at respective boid and cell index
+    neighborCellData[index, lookUpIndex*3] = dx
+    neighborCellData[index, lookUpIndex*3+1] = dy
+    neighborCellData[index, lookUpIndex*3+2] = numNeighbors
 
-# Reads direction vectors and weights for all neighbor tile calculations
+# Reads direction vectors and weights for all neighbor cell calculations
 # Gets final direction and position and writes to memory
-# neighborTileData -> renderData, boidData
+# neighborCellData -> renderData, boidData
 @cuda.jit
-def writeData(boidData, renderData, neighborTileData, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED):
+def writeData(boidData, renderData, neighborCellData, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED):
     index = cuda.grid(1)
     if index >= POPULATION:
         return
@@ -258,10 +258,10 @@ def writeData(boidData, renderData, neighborTileData, WRAP_AROUND, SPEED, COHESI
     dy = 0.0
     total = 0
     for i in range(9):
-        weight = neighborTileData[index, i*3+2]
+        weight = neighborCellData[index, i*3+2]
         total += weight
-        dx += neighborTileData[index, i*3] * weight
-        dy += neighborTileData[index, i*3+1] * weight
+        dx += neighborCellData[index, i*3] * weight
+        dy += neighborCellData[index, i*3+1] * weight
     if total > 0:
         dx /= total
         dy /= total
@@ -325,7 +325,7 @@ def writeData(boidData, renderData, neighborTileData, WRAP_AROUND, SPEED, COHESI
     boidData[index,3] = dy
 
 # If agent is near an edge and WrapAround is set to True
-# Checks if other agent is a neighbor for all neighboring tile configurations (9)
+# Checks if other agent is a neighbor for all neighboring cell configurations (9)
 # Looks for minimal toroidal distance and returns perceived position
 # Given what is provided by Numba we have to get the minimum manually
 @cuda.jit(device=True)
