@@ -8,10 +8,9 @@
  - Separation : move away from agents that get too close, seeking to respect a "personal bubble" and avoid overcrowding (or collisions)
 
 <p align="center" width="100%">
-    <img width="33%" src="./doc/rules.png">
+    Figure 1 – The 3 fundamental rules<br>
+    <img width="100%" src="./doc/rules.png">
 </p>
-
-Figure 1 – The 3 fundamental rules
 
 An important aspect of this model is how agents evaluate their velocity depending on the behavior of local flockmates. When an agent evaluates its peers, it only considers a certain portion of the flock, i.e. agents within a certain radius (called *neighbors*). Thus, as they move, all boids will individually evaluate their own *neighborhood* and readjust their direction.
 
@@ -24,19 +23,17 @@ One of the main steps in computing the direction of boids is when an agent must 
 One solution to this problem is to use spatial partitioning. The simulation space is thus divided into tiles distributed on a grid. This grid is used to identify the position of each agent and associate them to a certain tile. The size of the tiles is determined in accordance with the radius of the boids' neighborhood area. The neighbors of an agent will therefore always be found within the block of 9 tiles at the center of which the agent is located. This technique significantly reduces the average time required for the neighbor search and also gives a new opportunity to exploit space as a data structure.
 
 <p align="center" width="100%">
+    Figure 2 – Spatial partitioning : agents only consider boids that are positioned in the adjacent tiles to evaluate who are their neighbors<br>
     <img width="33%" src="./doc/spatial_partitioning.png">
 </p>
-
-Figure 2 – Spatial partitioning : agents only consider boids that are positioned in the adjacent tiles to evaluate who are their neighbors
 
 ### Wrap-Around
 The simulation features a *wrap-around* mechanism, which consists of connecting the opposite edges of the grid in order to be able to loop infinitely through the simulated space. On a wrap-around grid, an agent reaching the right boundary would appear on the left side, and if it would reach the lower boundary, it would reappear at the top of the grid. The space of the simulation thus has a toroidal topology. This feature is optional but has some impact on the implementation, namely when it comes to calculating the distance between two agents.
 
 <p align="center" width="100%">
+    Figure 3 – Wrap-around edges on the spatial partitioning grid<br>
     <img width="33%" src="./doc/wraparound_grid.png">
 </p>
-
-Figure 3 – Wrap-around edges on the spatial partitioning grid
 
 ### Neighbor search
 Using a partitioned grid, an agent will look for neighbors in 9 cells, i.e. its current cell and the 8 other cells surrounding it.
