@@ -8,7 +8,7 @@
  - Separation : move away from agents that get too close, seeking to respect a "personal bubble" and avoid overcrowding (or collisions)
 
 <p align="center" width="100%">
-    <img width="100%" src="./doc/rules.png">
+    <img width="100%" src="./img/rules.png">
     <br>Figure 1 – The 3 fundamental rules<br>
 </p>
 
@@ -23,7 +23,7 @@ One of the main steps in computing the direction of boids is when an agent must 
 One solution to this problem is to use spatial partitioning. The simulation space is thus divided into cells distributed on a grid. This grid is used to identify the position of each agent and associate them to a certain cell. The size of the cells is determined in accordance with the radius of the boids' neighborhood area. The neighbors of an agent will therefore always be found within the block of 9 cells at the center of which the agent is located. This technique significantly reduces the average time required for the neighbor search and also gives a new opportunity to exploit space as a data structure.
 
 <p align="center" width="100%">
-    <img width="33%" src="./doc/spatial_partitioning.png">
+    <img width="33%" src="./img/spatial_partitioning.png">
     <br>Figure 2 – Spatial partitioning : agents only consider flockmates that are positioned in the adjacent cells to evaluate which of them are their neighbors<br>
 </p>
 
@@ -31,7 +31,7 @@ One solution to this problem is to use spatial partitioning. The simulation spac
 The simulation features a *wrap-around* mechanism, which consists of connecting the opposite edges of the grid in order to be able to loop infinitely through the simulated space. On a wrap-around grid, an agent reaching the right boundary would appear on the left side, and if it would reach the lower boundary, it would reappear at the top of the grid. The space of the simulation thus has a toroidal topology. This feature is optional but has some impact on the implementation, namely when it comes to calculating the distance between two agents.
 
 <p align="center" width="100%">
-    <img width="33%" src="./doc/wraparound_grid.png">
+    <img width="33%" src="./img/wraparound_grid.png">
     <br>Figure 3 – Wrap-around edges on the spatial partitioning grid (using a 36 x 18 grid in this example)<br>
 </p>
 
