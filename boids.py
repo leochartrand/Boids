@@ -14,6 +14,7 @@ NEIGHBOR_DIST = 20
 SEPARATION_DIST = 0.4 # % of NEIGHBOR_DIST
 WRAP_AROUND = False
 SPOTLIGHT = False
+FADING_TRAILS = True
 # Window size
 WIDTH  = (NEIGHBOR_DIST) * 18*5
 HEIGHT = (NEIGHBOR_DIST) * 10*5
@@ -22,10 +23,10 @@ HEIGHT = (NEIGHBOR_DIST) * 10*5
 pg.init()
 SCREEN_SIZE = (WIDTH,HEIGHT)
 clock = pg.time.Clock()
-pg.display.set_caption("CUDA Boids")
+pg.display.set_caption("Boids")
 screen = pg.display.set_mode(SCREEN_SIZE, pg.OPENGL|pg.DOUBLEBUF)
 util.init(SCREEN_SIZE, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
-    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT))
+    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS))
 cp.init(util.parameters)
 ##############################################################################
 # Simulation loop

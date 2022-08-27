@@ -21,6 +21,7 @@ class Parameters:
     HEIGHT          : int
     WRAP_AROUND     : bool
     SPOTLIGHT       : bool
+    FADING_TRAILS   : bool
 
 def init(size, params):
     global shader, bgShader, impl, parameters
@@ -54,18 +55,23 @@ overlay = np.array((
             -1.0,3.0), dtype=np.float32)
 
 def renderSim(buffer):
-    # Render overlay - semi transparent overlay
-    # for fading trails
-    glUseProgram(bgShader)
-    vao = glGenVertexArrays(1)
-    glBindVertexArray(vao)
-    vbo = glGenBuffers(1)
-    glBindBuffer(GL_ARRAY_BUFFER, vbo)
-    glBufferData(GL_ARRAY_BUFFER, overlay.nbytes, overlay, GL_STATIC_DRAW)
-    glEnableVertexAttribArray(0)
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, ctypes.c_void_p(0))
-    glBindVertexArray(vao)
-    glDrawArrays(GL_TRIANGLES, 0, 3)
+    # Background render
+    if parameters.FADING_TRAILS:
+        # Render overlay - semi transparent overlay
+        # for fading trails
+        glUseProgram(bgShader)
+        vao = glGenVertexArrays(1)
+        glBindVertexArray(vao)
+        vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        glBufferData(GL_ARRAY_BUFFER, overlay.nbytes, overlay, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, ctypes.c_void_p(0))
+        glBindVertexArray(vao)
+        glDrawArrays(GL_TRIANGLES, 0, 3)
+    else:
+        glClearColor(0.125,0.125,0.125,1)
+        glClear(GL_COLOR_BUFFER_BIT)
     # Boids
     glUseProgram(shader)
     array = np.copy(buffer)
@@ -94,10 +100,13 @@ def renderGUI(tickTime):
     _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f', 1.0)
     if imgui.radio_button("WRAP AROUND", parameters.WRAP_AROUND):
         parameters.WRAP_AROUND = not parameters.WRAP_AROUND
-    imgui.same_line(spacing=50)
+    imgui.same_line(spacing=40)
     if imgui.radio_button("SPOTLIGHT", parameters.SPOTLIGHT):
         parameters.SPOTLIGHT = not parameters.SPOTLIGHT
-    imgui.same_line(spacing=50)
+    imgui.same_line(spacing=45)
+    if imgui.radio_button("FADING_TRAILS", parameters.FADING_TRAILS):
+        parameters.FADING_TRAILS = not parameters.FADING_TRAILS
+    # imgui.same_line(spacing=20)
     imgui.text(f"ms/frame: {tickTime}")
     imgui.push_style_var(imgui.STYLE_ALPHA, 0.2)
     imgui.text("(Press SPACE to hide)")
