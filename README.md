@@ -1,6 +1,4 @@
 # Boids Simulation
-![](./doc/animated.gif)
-
 *Boids* is a classic artificial life simulation in which collective flocking behaviour can emerge from the interaction of agents following simple rules. The Boids model applies three rules: 
 
  - Cohesion : steer towards the average position of its neighbors, seeking to become part of the group
