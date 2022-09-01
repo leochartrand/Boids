@@ -1,5 +1,5 @@
 # Boids Simulation
-*Boids* is a classic artificial life simulation in which collective flocking behaviour can emerge from the interaction of agents following simple rules. The Boids model applies three rules: 
+*Boids* is a classic artificial life simulation in which collective flocking behaviour can emerge from the interaction of agents following simple rules. The Boids model consists of three rules: 
 
  - Cohesion : steer towards the average position of its neighbors, seeking to become part of the group
  - Alignment : follow the general direction of its neighbors
@@ -9,6 +9,8 @@
     <img width="100%" src="./img/rules.png">
     <br>Figure 1 – The 3 fundamental rules<br>
 </p>
+
+This model was first implemented in 1986 by Craig Reynolds. More information can be found on Reynolds' [website](https://www.red3d.com/cwr/boids/).
 
 An important aspect of this model is how agents evaluate their velocity depending on the behavior of local flockmates. When an agent evaluates its peers, it only considers a certain portion of the flock, i.e. agents within a certain radius (called *neighbors*). Thus, as they move, all boids will individually evaluate their own *neighborhood* and readjust their direction.
 
@@ -46,7 +48,19 @@ As for the neighbor search, the calculations for each of the 9 neighbor cells fo
 
 <p align="center" width="100%">
     <img width="66%" src="./img/threads.png">
-    <br>Figure 4 – Distribution of threads for the neighbor search kernel<br>
+    <br>Figure 4 – Distribution of blocks/threads for the neighbor search kernel<br>
 </p>
 
 Given the nature of the simulation, the agents do not share memory. The blocks are not distributed in a way to increase performance but to facilitate kernel invocation and indexing.
+
+# Future additions
+This project is still a work in progress and more features might be added in the future, such as:
+
+ - Perception angle: agents don't consider neighbors at a certain angle behind them
+ - Predators and species
+ - Obstacle avoidance and goal seeking
+ - Performance optimization
+ - Possibly moving on from Python/Numba to C/Cuda
+ - Switching from PyGame to GLFW
+
+The *boids engine* could also be used to support other examples of swarm intelligence such as ant routing or slime simulations. I am considering the possibility of redefining this project as particle system simulator...
