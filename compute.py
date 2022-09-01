@@ -74,10 +74,9 @@ def init(settings):
 #######################################
 # Update
 #######################################
+
 def update(params):
     updateParams(params)
-
-    start_time = datetime.datetime.now()
     global renderData, boidData, lookUpTable, boidPositionTable, cellIndexTable
     # Kernels are set to default stream and are executed sequentially
     # 512 threads per block, as many blocks as we need 
@@ -85,41 +84,16 @@ def update(params):
     nblocks = (POPULATION + (nthreads - 1)) // nthreads
     fillBoidPositionTable[nblocks, nthreads](boidData, boidPositionTable, renderData)
     # CuPy sort, a bit faster than on CPU
-    end_time = datetime.datetime.now()
-    time_diff = (end_time - start_time)
-    print("positions:",time_diff.total_seconds() * 1000)
-
-    start_time = datetime.datetime.now()
     boidPositionTable = boidPositionTable[cp.argsort(boidPositionTable[:,1])]
     # New index table according to data from sorted boid table
-    end_time = datetime.datetime.now()
-    time_diff = (end_time - start_time)
-    print("sort:",time_diff.total_seconds() * 1000)
-
-    start_time = datetime.datetime.now()
     cellIndexTable.fill(-1)
-    end_time = datetime.datetime.now()
-    time_diff = (end_time - start_time)
-    print("prefill:",time_diff.total_seconds() * 1000)
-
-    start_time = datetime.datetime.now()
     fillCellIndexTable[nblocks, nthreads](boidPositionTable, cellIndexTable)
-    end_time = datetime.datetime.now()
-    time_diff = (end_time - start_time)
-    print("index:",time_diff.total_seconds() * 1000)
-    
-    start_time = datetime.datetime.now()
+    # 2D kernel. X axis is boids, Y axis is each of their 9 respective neighbor cells
     neighborSearch[(nblocks,9), (nthreads,1)](boidData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
-    end_time = datetime.datetime.now()
-    time_diff = (end_time - start_time)
-    print("read:",time_diff.total_seconds() * 1000)
-
-    start_time = datetime.datetime.now()
+    # Update positions and write to render buffer
     writeData[nblocks, nthreads](boidData, renderData, WRAP_AROUND, SPEED)
-    end_time = datetime.datetime.now()
-    time_diff = (end_time - start_time)
-    print("write:",time_diff.total_seconds() * 1000)
 
+# Update parameters with GUI input
 def updateParams(params):
     global POPULATION, SPEED, WRAP_AROUND, SPOTLIGHT
     global COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED
