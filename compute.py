@@ -3,6 +3,7 @@ import numpy as np
 import cupy as cp
 import random as rd
 import math
+import datetime
 
 def init(settings):
     #Validation
@@ -14,7 +15,7 @@ def init(settings):
     #######################################
     global POPULATION, SPEED, WRAP_AROUND, SPOTLIGHT
     global COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED
-    global WIDTH, HEIGHT, HALF_WIDTH, HALF_HEIGHT, SPEED, PARALLEL, GRID_CELL_SIZE, GRID_WIDTH, GRID_HEIGHT
+    global WIDTH, HEIGHT, HALF_WIDTH, HALF_HEIGHT, SPEED, PARALLEL, GRID_CELL_SIZE, GRID_WIDTH, GRID_HEIGHT, GRID_SIZE
     POPULATION = settings.POPULATION
     SPEED = settings.SPEED
     COHESION = settings.COHESION
@@ -30,20 +31,21 @@ def init(settings):
     GRID_CELL_SIZE = settings.NEIGHBOR_DIST
     GRID_WIDTH = WIDTH//GRID_CELL_SIZE
     GRID_HEIGHT = HEIGHT//GRID_CELL_SIZE
+    GRID_SIZE = GRID_WIDTH*GRID_HEIGHT
     WRAP_AROUND = settings.WRAP_AROUND
     SPOTLIGHT = settings.SPOTLIGHT
     #######################################
     # Arrays
     #######################################
-    global renderData, boidData, neighborCellData, lookUpTable, cellIndexTable, boidPositionTable
+    global renderData, boidData, lookUpTable, cellIndexTable, boidPositionTable
     renderData = np.zeros((POPULATION, 3), dtype=np.float32)
-    neighborCellData = cuda.to_device(np.zeros((POPULATION, 27), dtype=np.float32))
-    tempBoidData = np.zeros((POPULATION, 4), dtype=np.float32)
+    tempBoidData = np.zeros((POPULATION, 32), dtype=np.float32)
     for i in range(POPULATION):
-        tempBoidData[i,0] = rd.uniform(0, WIDTH)
-        tempBoidData[i,1] = rd.uniform(0, HEIGHT)
-        tempBoidData[i,2] = rd.random()*2-1
+        tempBoidData[i,0] = 0.0
+        tempBoidData[i,1] = rd.uniform(0, WIDTH)
+        tempBoidData[i,2] = rd.uniform(0, HEIGHT)
         tempBoidData[i,3] = rd.random()*2-1
+        tempBoidData[i,4] = rd.random()*2-1
     boidData = cuda.to_device(tempBoidData)
     # Tables
     # Boid Table - List of every boid and their current cell, sorted by cell
@@ -54,10 +56,10 @@ def init(settings):
     boidPositionTable = cp.asarray(tempBoidTable)
     # Tables
     # Cell Index Table (gives start index of cell on sorted Boid Table)
-    cellIndexTable = np.zeros(GRID_WIDTH*GRID_HEIGHT, dtype=np.int32)
+    cellIndexTable = np.zeros(GRID_SIZE, dtype=np.int32)
     # Tables
     # Look-Up table (for neighbor cells - read only)
-    tempLookUpTable = np.zeros((GRID_WIDTH*GRID_HEIGHT,9), dtype=np.int32)
+    tempLookUpTable = np.zeros((GRID_SIZE,9), dtype=np.int32)
     cellOffset = {-1, 0, 1}
     for index, cell in enumerate(tempLookUpTable):
         x = index % GRID_WIDTH
@@ -72,9 +74,10 @@ def init(settings):
 #######################################
 # Update
 #######################################
+
 def update(params):
     updateParams(params)
-    global renderData, neighborCellData, boidData, lookUpTable, boidPositionTable, cellIndexTable
+    global renderData, boidData, lookUpTable, boidPositionTable, cellIndexTable
     # Kernels are set to default stream and are executed sequentially
     # 512 threads per block, as many blocks as we need 
     nthreads = 512
@@ -86,10 +89,11 @@ def update(params):
     cellIndexTable.fill(-1)
     fillCellIndexTable[nblocks, nthreads](boidPositionTable, cellIndexTable)
     # 2D kernel. X axis is boids, Y axis is each of their 9 respective neighbor cells
-    getBoidDataFromCell[(nblocks,9), (nthreads,1)](boidData, neighborCellData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
-    # Once previous kernel is finished, gets data from dirBuffer and writes to renderBuffer and boidBuffer
-    writeData[nblocks, nthreads](boidData, renderData, neighborCellData, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
+    neighborSearch[(nblocks,9), (nthreads,1)](boidData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
+    # Update positions and write to render buffer
+    writeData[nblocks, nthreads](boidData, renderData, WRAP_AROUND, SPEED)
 
+# Update parameters with GUI input
 def updateParams(params):
     global POPULATION, SPEED, WRAP_AROUND, SPOTLIGHT
     global COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED
@@ -104,7 +108,7 @@ def updateParams(params):
 
 
 #######################################
-# Parallel
+# Kernels
 #######################################
 
 # Update Boid Table with new cell for every agent
@@ -113,8 +117,8 @@ def fillBoidPositionTable(boidData, boidPositionTable, renderData):
     index = cuda.grid(1)
     if index >= POPULATION:
         return
-    x = int(boidData[index,0]//GRID_CELL_SIZE) % GRID_WIDTH
-    y = int(boidData[index,1]//GRID_CELL_SIZE) % GRID_HEIGHT
+    x = int(boidData[index,1]//GRID_CELL_SIZE) % GRID_WIDTH
+    y = int(boidData[index,2]//GRID_CELL_SIZE) % GRID_HEIGHT
     gridIndex = x + y * GRID_WIDTH
     boidPositionTable[index,0] = index
     boidPositionTable[index,1] = gridIndex
@@ -136,15 +140,15 @@ def fillCellIndexTable(boidPositionTable, cellIndexTable):
 
 # For a certain agent and a certain cell in the agent's neighboring cells
 # Get neighbor data and compute new direction vector with weight
-# boidData -> neighborCellData
+# boidData -> boidData
 @cuda.jit
-def getBoidDataFromCell(boidData, neighborCellData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED):
+def neighborSearch(boidData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED):
     lookUpIndex = cuda.blockIdx.y
     index = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     if index >= POPULATION:
         return
     # Current  position
-    x, y = boidData[index,0], boidData[index,1]
+    x, y = boidData[index,1], boidData[index,2]
     # Boid direction
     dx, dy = 0.0, 0.0
     numNeighbors = 0
@@ -174,28 +178,26 @@ def getBoidDataFromCell(boidData, neighborCellData, lookUpTable, cellIndexTable,
             else:
                 cond = boidPositionTable[startIndex,1]
             # Get agent data and check if it's a neighbor
-            ax = boidData[agent,0]
-            ay = boidData[agent,1]
-            adx = boidData[agent,2]
-            ady = boidData[agent,3]
+            ax = boidData[agent,1]
+            ay = boidData[agent,2]
+            adx = boidData[agent,3]
+            ady = boidData[agent,4]
             if onEdge:
                 (ax, ay) = minimalToroidalDistance(x,y,ax,ay)
             distX = x - ax
             distY = y - ay
             distLengthSquared = distX**2 + distY**2
             isNeighbor = (distLengthSquared < NEIGHBOR_DIST_SQUARED)
+            isTooClose = (distLengthSquared < SEPARATION_DIST_SQUARED)
             # SPOTLIGHT
-            if SPOTLIGHT:
-                if index == 0:
-                    renderData[index, 2] = 1.0
-                    if distLengthSquared < SEPARATION_DIST_SQUARED:
-                        renderData[agent, 2] = 2.0
-                    elif isNeighbor:
-                        renderData[agent, 2] = 3.0
-                    else:
-                        renderData[agent, 2] = 4.0
-            else:
-                renderData[index, 2] = 0.0
+            if SPOTLIGHT and index == 0:
+                renderData[index, 2] = 1.0
+                if isTooClose:
+                    renderData[agent, 2] = 2.0
+                elif isNeighbor:
+                    renderData[agent, 2] = 3.0
+                else:
+                    renderData[agent, 2] = 4.0
             # Collect agent data
             if agent != index and isNeighbor:
                 numNeighbors += 1
@@ -203,7 +205,7 @@ def getBoidDataFromCell(boidData, neighborCellData, lookUpTable, cellIndexTable,
                 alignmentY += ady
                 cohesionX += ax
                 cohesionY += ay
-                if distLengthSquared < SEPARATION_DIST_SQUARED:
+                if isTooClose:
                     # distX /= distLengthSquared
                     # distY /= distLengthSquared
                     separationX += distX
@@ -239,29 +241,29 @@ def getBoidDataFromCell(boidData, neighborCellData, lookUpTable, cellIndexTable,
             dx += separationX * SEPARATION
             dy += separationY * SEPARATION
     # Write to direction buffer at respective boid and cell index
-    neighborCellData[index, lookUpIndex*3] = dx
-    neighborCellData[index, lookUpIndex*3+1] = dy
-    neighborCellData[index, lookUpIndex*3+2] = numNeighbors
+    boidData[index, lookUpIndex*3+5] = dx
+    boidData[index, lookUpIndex*3+6] = dy
+    boidData[index, lookUpIndex*3+7] = numNeighbors
 
 # Reads direction vectors and weights for all neighbor cell calculations
 # Gets final direction and position and writes to memory
-# neighborCellData -> renderData, boidData
+# boidData -> renderData
 @cuda.jit
-def writeData(boidData, renderData, neighborCellData, WRAP_AROUND, SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED):
+def writeData(boidData, renderData, WRAP_AROUND, SPEED):
     index = cuda.grid(1)
     if index >= POPULATION:
         return
-    x, y = boidData[index,0], boidData[index,1]
+    x, y = boidData[index,1], boidData[index,2]
     # Previous direction
-    pdx, pdy = boidData[index,2], boidData[index,3]
+    pdx, pdy = boidData[index,3], boidData[index,4]
     dx = 0.0
     dy = 0.0
     total = 0
     for i in range(9):
-        weight = neighborCellData[index, i*3+2]
+        weight = boidData[index, i*3+7]
         total += weight
-        dx += neighborCellData[index, i*3] * weight
-        dy += neighborCellData[index, i*3+1] * weight
+        dx += boidData[index, i*3+5] * weight
+        dy += boidData[index, i*3+6] * weight
     if total > 0:
         dx /= total
         dy /= total
@@ -318,11 +320,12 @@ def writeData(boidData, renderData, neighborCellData, WRAP_AROUND, SPEED, COHESI
     # Write screen position in [-1,1]
     renderData[index,0] = rx
     renderData[index,1] = ry
+    # renderData[index,2] = ry
     # Store data for next calculation
-    boidData[index,0] = x
-    boidData[index,1] = y
-    boidData[index,2] = dx
-    boidData[index,3] = dy
+    boidData[index,1] = x
+    boidData[index,2] = y
+    boidData[index,3] = dx
+    boidData[index,4] = dy
 
 # If agent is near an edge and WrapAround is set to True
 # Checks if other agent is a neighbor for all neighboring cell configurations (9)
