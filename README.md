@@ -42,10 +42,10 @@ After identifying the neighboring cells, an agent must then evaluate which of it
 ### Parallelization
 It is relevant to note that the calculations for each agent is independent. The search can therefore be parallelized with a number of threads equal to the population size. Most kernels in the program therefore use 1D indexing, with a thread for every agent, distributed in blocks of 512 threads. 
 
-As for the neighbor search, the calculations in each of the 9 cells for the same agent are also independant. The kernel will thus be executed by a number of threads threads totaling 9 times the population size. This kernel uses 2D indexing, where the population is distributed along the X axis and the search in each of the 9 neighbor cells along the Y axis.
+As for the neighbor search, the calculations for each of the 9 neighbor cells for the same agent are also independant. The kernel will thus be executed by a number of threads threads totaling 9 times the population size. This kernel uses 2D indexing, where the population is distributed along the X axis and the search in each of the 9 neighbor cells is distributed along the Y axis.
 
 <p align="center" width="100%">
-    <img width="33%" src="./img/threads.png">
+    <img width="66%" src="./img/threads.png">
     <br>Figure 4 – Distribution of threads for the neighbor search kernel<br>
 </p>
 
