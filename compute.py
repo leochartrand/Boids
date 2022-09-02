@@ -77,21 +77,51 @@ def init(settings):
 
 def update(params):
     updateParams(params)
+    
+    start_time = datetime.datetime.now()
     global renderData, boidData, lookUpTable, boidPositionTable, cellIndexTable
     # Kernels are set to default stream and are executed sequentially
     # 512 threads per block, as many blocks as we need 
     nthreads = 512
     nblocks = (POPULATION + (nthreads - 1)) // nthreads
     fillBoidPositionTable[nblocks, nthreads](boidData, boidPositionTable, renderData)
+    end_time = datetime.datetime.now()
+    time_diff = (end_time - start_time)
+    print("positions:",time_diff.total_seconds() * 1000)
+
+    start_time = datetime.datetime.now()
     # CuPy sort, a bit faster than on CPU
     boidPositionTable = boidPositionTable[cp.argsort(boidPositionTable[:,1])]
+    end_time = datetime.datetime.now()
+    time_diff = (end_time - start_time)
+    print("sort:",time_diff.total_seconds() * 1000)
+
+    start_time = datetime.datetime.now()
     # New index table according to data from sorted boid table
     cellIndexTable.fill(-1)
+    end_time = datetime.datetime.now()
+    time_diff = (end_time - start_time)
+    print("prefill:",time_diff.total_seconds() * 1000)
+
+    start_time = datetime.datetime.now()
     fillCellIndexTable[nblocks, nthreads](boidPositionTable, cellIndexTable)
+    end_time = datetime.datetime.now()
+    time_diff = (end_time - start_time)
+    print("index:",time_diff.total_seconds() * 1000)
+    
+    start_time = datetime.datetime.now()
     # 2D kernel. X axis is boids, Y axis is each of their 9 respective neighbor cells
     neighborSearch[(nblocks,9), (nthreads,1)](boidData, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
+    end_time = datetime.datetime.now()
+    time_diff = (end_time - start_time)
+    print("read:",time_diff.total_seconds() * 1000)
+
+    start_time = datetime.datetime.now()
     # Update positions and write to render buffer
     writeData[nblocks, nthreads](boidData, renderData, WRAP_AROUND, SPEED)
+    end_time = datetime.datetime.now()
+    time_diff = (end_time - start_time)
+    print("write:",time_diff.total_seconds() * 1000)
 
 # Update parameters with GUI input
 def updateParams(params):
@@ -149,8 +179,9 @@ def neighborSearch(boidData, lookUpTable, cellIndexTable, boidPositionTable, ren
         return
     # Current  position
     x, y = boidData[index,1], boidData[index,2]
+    dx, dy = boidData[index,3],boidData[index,4]
     # Boid direction
-    dx, dy = 0.0, 0.0
+    resX, resY = 0.0, 0.0
     numNeighbors = 0
     alignmentX, alignmentY = 0.0, 0.0
     cohesionX, cohesionY = 0.0, 0.0
@@ -178,39 +209,41 @@ def neighborSearch(boidData, lookUpTable, cellIndexTable, boidPositionTable, ren
             else:
                 cond = boidPositionTable[startIndex,1]
             # Get agent data and check if it's a neighbor
-            ax = boidData[agent,1]
-            ay = boidData[agent,2]
-            adx = boidData[agent,3]
-            ady = boidData[agent,4]
-            if onEdge:
-                (ax, ay) = minimalToroidalDistance(x,y,ax,ay)
-            distX = x - ax
-            distY = y - ay
-            distLengthSquared = distX**2 + distY**2
-            isNeighbor = (distLengthSquared < NEIGHBOR_DIST_SQUARED)
-            isTooClose = (distLengthSquared < SEPARATION_DIST_SQUARED)
-            # SPOTLIGHT
-            if SPOTLIGHT and index == 0:
-                renderData[index, 2] = 1.0
-                if isTooClose:
-                    renderData[agent, 2] = 2.0
-                elif isNeighbor:
-                    renderData[agent, 2] = 3.0
-                else:
-                    renderData[agent, 2] = 4.0
-            # Collect agent data
-            if agent != index and isNeighbor:
-                numNeighbors += 1
-                alignmentX += adx
-                alignmentY += ady
-                cohesionX += ax
-                cohesionY += ay
-                if isTooClose:
-                    # distX /= distLengthSquared
-                    # distY /= distLengthSquared
-                    separationX += distX
-                    separationY += distY
-                    numSeparation += 1
+            if agent != index:
+                ax = boidData[agent,1]
+                ay = boidData[agent,2]
+                adx = boidData[agent,3]
+                ady = boidData[agent,4]
+                if onEdge:
+                    (ax, ay) = minimalToroidalDistance(x,y,ax,ay)
+                distX = x - ax
+                distY = y - ay
+                distLengthSquared = distX**2 + distY**2
+                isTooClose = (distLengthSquared < SEPARATION_DIST_SQUARED)
+                isNeighbor = (distLengthSquared < NEIGHBOR_DIST_SQUARED) and isInFOV(dx,dy,distX,distY,distLengthSquared)
+                # SPOTLIGHT
+                if SPOTLIGHT and index == 0:
+                    # Agent spotlight
+                    renderData[index, 2] = 1.0
+                    if isTooClose:
+                        renderData[agent, 2] = 2.0
+                    elif isNeighbor:
+                        renderData[agent, 2] = 3.0
+                    else:
+                        renderData[agent, 2] = 4.0
+                # Collect agent data
+                if isNeighbor:
+                    numNeighbors += 1
+                    alignmentX += adx
+                    alignmentY += ady
+                    cohesionX += ax
+                    cohesionY += ay
+                    if isTooClose:
+                        # distX /= distLengthSquared
+                        # distY /= distLengthSquared
+                        separationX += distX
+                        separationY += distY
+                        numSeparation += 1
     if numNeighbors > 0:
         # Apply boid rules
         # Alignment
@@ -218,8 +251,8 @@ def neighborSearch(boidData, lookUpTable, cellIndexTable, boidPositionTable, ren
         l = math.sqrt(alignmentX**2 + alignmentY**2)
         alignmentX, alignmentY = alignmentX / l, alignmentY / l
         # Add alignment vector to direction
-        dx += alignmentX * ALIGNMENT
-        dy += alignmentY * ALIGNMENT
+        resX += alignmentX * ALIGNMENT
+        resY += alignmentY * ALIGNMENT
         # Cohesion
         # Get vector towards center of mass
         cohesionX /= numNeighbors
@@ -230,19 +263,19 @@ def neighborSearch(boidData, lookUpTable, cellIndexTable, boidPositionTable, ren
         l = math.sqrt(cohesionX**2 + cohesionY**2)
         cohesionX, cohesionY = cohesionX / l, cohesionY / l
         # Add cohesion vector to direction
-        dx += cohesionX * COHESION
-        dy += cohesionY * COHESION
+        resX += cohesionX * COHESION
+        resY += cohesionY * COHESION
         # Separation
         if numSeparation > 0:
             # Normalize separation vector
             l = math.sqrt(separationX**2 + separationY**2)
             separationX, separationY = separationX / l, separationY / l
             # Add separation vector to direction
-            dx += separationX * SEPARATION
-            dy += separationY * SEPARATION
+            resX += separationX * SEPARATION
+            resY += separationY * SEPARATION
     # Write to direction buffer at respective boid and cell index
-    boidData[index, lookUpIndex*3+5] = dx
-    boidData[index, lookUpIndex*3+6] = dy
+    boidData[index, lookUpIndex*3+5] = resX
+    boidData[index, lookUpIndex*3+6] = resY
     boidData[index, lookUpIndex*3+7] = numNeighbors
 
 # Reads direction vectors and weights for all neighbor cell calculations
@@ -359,3 +392,6 @@ def minimalToroidalDistance(x,y,ax,ay):
         ay = ay2
     return (ax,ay)
 
+@cuda.jit(device=True)
+def isInFOV(dx,dy,adx,ady,neighborVector):
+    return ( (dx * adx + dy * ady) / (math.sqrt(dx**2 + dy**2) * math.sqrt(neighborVector)) ) < 0.8

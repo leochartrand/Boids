@@ -5,19 +5,19 @@ import compute as cp
 import util
 ##############################################################################
 # Simulation parameters
-POPULATION = 20000
+POPULATION = 100000
 SPEED = 2.0
 COHESION = 0.01
 ALIGNMENT = 0.2
 SEPARATION = 0.1
-NEIGHBOR_DIST = 20
+NEIGHBOR_DIST = 50
 SEPARATION_DIST = 0.4 # % of NEIGHBOR_DIST
 WRAP_AROUND = False
 SPOTLIGHT = False
 FADING_TRAILS = True
 # Window size
-WIDTH  = (NEIGHBOR_DIST) * 36*5
-HEIGHT = (NEIGHBOR_DIST) * 20*5
+WIDTH  = (NEIGHBOR_DIST) * 36*2
+HEIGHT = (NEIGHBOR_DIST) * 20*2
 ##############################################################################
 # Initialisation
 pg.init()
