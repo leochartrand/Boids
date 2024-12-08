@@ -395,3 +395,5 @@ def minimalToroidalDistance(x,y,ax,ay):
 @cuda.jit(device=True)
 def isInFOV(dx,dy,adx,ady,neighborVector):
     return ( (dx * adx + dy * ady) / (math.sqrt(dx**2 + dy**2) * math.sqrt(neighborVector)) ) < 0.8
+    # ?
+    # return ( (dx * adx + dy * ady)**2 / ((dx**2 + dy**2) * neighborVector) ) < 0.64
