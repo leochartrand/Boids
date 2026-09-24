@@ -17,7 +17,7 @@ An important aspect of this model is how agents evaluate their velocity dependin
 The evaluations for each boid are independent of each other and can therefore be computed simultaneously. A large population of agents can lead to a large amount of computation, so there is a huge advantage to using parallelism in the implementation of this simulation. The solution presented here exploits parallelism to simulate a population of boids that can reach hundreds of thousands using modern hardware.
 
 # Getting started
-Requirements: an NVIDIA GPU with a driver supporting CUDA 12, OpenGL 4.6, and Python 3.11 (the GUI library, pyimgui, has no packages for newer versions). The CUDA toolkit is installed through pip, no system-wide installation is needed.
+Requirements: an NVIDIA GPU with a driver supporting CUDA 12, OpenGL 4.6, and Python 3.11 or newer (tested with 3.11 and 3.13). The CUDA toolkit is installed through pip, no system-wide installation is needed.
 
 ```
 pip install -r requirements.txt

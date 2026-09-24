@@ -6,9 +6,9 @@ import cupy as cp
 from cuda.bindings import runtime as cudart
 from OpenGL.GL.shaders import compileProgram, compileShader
 from numba.core.errors import NumbaPerformanceWarning
-import glfw
-import imgui
-from imgui.integrations.glfw import GlfwRenderer
+import glfw # before imgui_bundle, so it uses this GLFW and not the one it bundles
+from imgui_bundle import imgui
+from imgui_bundle.python_backends.glfw_backend import GlfwRenderer
 import warnings
 warnings.simplefilter('ignore', category=NumbaPerformanceWarning)
 
@@ -136,30 +136,25 @@ def renderGUI(frameTime):
     global parameters
     impl.process_inputs()
     imgui.new_frame()
-    imgui.set_next_window_size(600, 300)
-    imgui.set_next_window_position(0, 0)
-    imgui.begin("Custom window", flags=imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE | imgui.WINDOW_NO_BACKGROUND)
-    _,parameters.COHESION = imgui.core.slider_float('COHESION', parameters.COHESION, 0.0, 100.0, '%.2f', imgui.SLIDER_FLAGS_LOGARITHMIC)
-    _,parameters.ALIGNMENT = imgui.core.slider_float('ALIGNMENT', parameters.ALIGNMENT, 0.0, 100.0, '%.2f', imgui.SLIDER_FLAGS_LOGARITHMIC)
-    _,parameters.SEPARATION = imgui.core.slider_float('SEPARATION', parameters.SEPARATION, 0.0, 100.0, '%.2f', imgui.SLIDER_FLAGS_LOGARITHMIC)
-    _,parameters.SEPARATION_DIST = imgui.slider_int('NEIGHBOR/SEPARATION RATIO', int(parameters.SEPARATION_DIST*100), 0, 100, '%d%%')
-    parameters.SEPARATION_DIST /= 100
-    _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f', 1.0)
-    _,parameters.CANDIDATE_BUDGET = imgui.slider_int('CANDIDATE BUDGET', parameters.CANDIDATE_BUDGET, 16, 16384, '%d', imgui.SLIDER_FLAGS_LOGARITHMIC)
-    if imgui.radio_button("WRAP AROUND", parameters.WRAP_AROUND):
-        parameters.WRAP_AROUND = not parameters.WRAP_AROUND
+    imgui.set_next_window_size(imgui.ImVec2(600, 300))
+    imgui.set_next_window_pos(imgui.ImVec2(0, 0))
+    imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize | imgui.WindowFlags_.no_background)
+    _,parameters.COHESION = imgui.slider_float('COHESION', parameters.COHESION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
+    _,parameters.ALIGNMENT = imgui.slider_float('ALIGNMENT', parameters.ALIGNMENT, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
+    _,parameters.SEPARATION = imgui.slider_float('SEPARATION', parameters.SEPARATION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
+    _,separationPercent = imgui.slider_int('NEIGHBOR/SEPARATION RATIO', round(parameters.SEPARATION_DIST*100), 0, 100, '%d%%')
+    parameters.SEPARATION_DIST = separationPercent / 100
+    _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f')
+    _,parameters.CANDIDATE_BUDGET = imgui.slider_int('CANDIDATE BUDGET', parameters.CANDIDATE_BUDGET, 16, 16384, '%d', imgui.SliderFlags_.logarithmic)
+    _,parameters.WRAP_AROUND = imgui.checkbox("WRAP AROUND", parameters.WRAP_AROUND)
     imgui.same_line(spacing=40)
-    if imgui.radio_button("SPOTLIGHT", parameters.SPOTLIGHT):
-        parameters.SPOTLIGHT = not parameters.SPOTLIGHT
+    _,parameters.SPOTLIGHT = imgui.checkbox("SPOTLIGHT", parameters.SPOTLIGHT)
     imgui.same_line(spacing=45)
-    if imgui.radio_button("FADING_TRAILS", parameters.FADING_TRAILS):
-        parameters.FADING_TRAILS = not parameters.FADING_TRAILS
-    # imgui.same_line(spacing=20)
+    _,parameters.FADING_TRAILS = imgui.checkbox("FADING_TRAILS", parameters.FADING_TRAILS)
     imgui.text(f"ms/frame: {frameTime:.1f}")
-    imgui.push_style_var(imgui.STYLE_ALPHA, 0.2)
+    imgui.push_style_var(imgui.StyleVar_.alpha, 0.2)
     imgui.text("(Press SPACE to hide)")
     imgui.pop_style_var(1)
     imgui.end()
-    imgui.end_frame()
     imgui.render()
     impl.render(imgui.get_draw_data())
