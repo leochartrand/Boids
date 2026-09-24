@@ -17,6 +17,8 @@ SEPARATION_FALLOFF = 1.0
 WRAP_AROUND = False
 SPOTLIGHT = False
 FADING_TRAILS = True
+# Light a boid adds to its pixel (like an exposure): lower looks finer, and dense flocks show brighter
+BOID_INTENSITY = 2.0
 # Max agents tested per neighbor search. Above it, a random sample is tested:
 # much faster in dense clumps, but separation gets noisier and weaker there
 CANDIDATE_BUDGET = 2048
@@ -48,7 +50,7 @@ def onKey(key: int) -> None:
         showGUI = not showGUI
 
 util.init(window, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
-    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET, SEPARATION_FALLOFF), onKey)
+    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET, SEPARATION_FALLOFF, BOID_INTENSITY), onKey)
 cp.init(util.parameters)
 ##############################################################################
 # Simulation loop

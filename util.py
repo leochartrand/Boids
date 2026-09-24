@@ -17,28 +17,49 @@ from numba.core.errors import NumbaPerformanceWarning
 from OpenGL.GL import (
     GL_ARRAY_BUFFER,
     GL_BLEND,
+    GL_COLOR_ATTACHMENT0,
     GL_COLOR_BUFFER_BIT,
     GL_DYNAMIC_DRAW,
     GL_FALSE,
     GL_FLOAT,
     GL_FRAGMENT_SHADER,
+    GL_FRAMEBUFFER,
+    GL_FRAMEBUFFER_COMPLETE,
+    GL_LINEAR,
+    GL_ONE,
     GL_ONE_MINUS_SRC_ALPHA,
     GL_POINTS,
+    GL_RGBA16F,
     GL_SRC_ALPHA,
     GL_STATIC_DRAW,
+    GL_TEXTURE_2D,
+    GL_TEXTURE_MAG_FILTER,
+    GL_TEXTURE_MIN_FILTER,
     GL_TRIANGLES,
     GL_VERTEX_SHADER,
     glBindBuffer,
+    glBindFramebuffer,
+    glBindTexture,
     glBindVertexArray,
     glBlendFunc,
     glBufferData,
+    glCheckFramebufferStatus,
     glClear,
     glClearColor,
     glDrawArrays,
     glEnable,
     glEnableVertexAttribArray,
+    glFramebufferTexture2D,
     glGenBuffers,
+    glGenFramebuffers,
+    glGenTextures,
     glGenVertexArrays,
+    glGetUniformLocation,
+    glTexParameteri,
+    glTexStorage2D,
+    glUniform1f,
+    glUniform1i,
+    glUniform2f,
     glUseProgram,
     glVertexAttribPointer,
     glViewport,
@@ -66,6 +87,7 @@ class Parameters:
     FADING_TRAILS   : bool
     CANDIDATE_BUDGET: int = 2048
     SEPARATION_FALLOFF: float = 1.0
+    BOID_INTENSITY: float = 2.0
 
 OVERLAY = np.array((
             -1.0,-1.0,
@@ -82,13 +104,31 @@ def checkCuda(result: tuple[Any, ...]) -> list[Any]:
 # onKey(key) is called for key presses that the GUI doesn't use
 def init(glfwWindow: GlfwWindow, params: Parameters, onKey: Callable[[int], None]) -> None:
     global window, shader, bgShader, impl, parameters, bgVao, bgVbo, boidVao, boidVbo, boidResource
+    global intensityLocation, trailsFramebuffer, trailsTexture, trailsSize, presentShader, windowSizeLocation
     window = glfwWindow
     parameters = params
     # Enable alpha blending (for fading trails)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     glEnable( GL_BLEND )
+    # Trails image: the simulation is drawn in a 16-bit float texture, then copied to the window.
+    # In the window's 8-bit colors, the fade got stuck a few levels above the background
+    # (rounding), and the trails relied on the window keeping its previous image, which OpenGL
+    # doesn't guarantee
+    trailsSize = glfw.get_framebuffer_size(window)
+    trailsTexture = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_2D, trailsTexture)
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA16F, *trailsSize)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    glBindTexture(GL_TEXTURE_2D, 0)
+    trailsFramebuffer = glGenFramebuffers(1)
+    glBindFramebuffer(GL_FRAMEBUFFER, trailsFramebuffer)
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, trailsTexture, 0)
+    if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+        raise RuntimeError("Could not create the trails framebuffer")
     glClearColor(0.125,0.125,0.125,1)
     glClear(GL_COLOR_BUFFER_BIT)
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
     # Init shaders
     with open("shaders/vs.glsl", 'r') as f:
         vShader = f.readlines()
@@ -102,6 +142,17 @@ def init(glfwWindow: GlfwWindow, params: Parameters, onKey: Callable[[int], None
     bgShader = compileProgram(
         compileShader(vShader, GL_VERTEX_SHADER),
         compileShader(fShader, GL_FRAGMENT_SHADER))
+    intensityLocation = glGetUniformLocation(shader, "boidIntensity")
+    # Draws the trails image in the window, tone mapped
+    with open("shaders/present_fs.glsl", 'r') as f:
+        fShader = f.readlines()
+    presentShader = compileProgram(
+        compileShader(vShader, GL_VERTEX_SHADER),
+        compileShader(fShader, GL_FRAGMENT_SHADER))
+    windowSizeLocation = glGetUniformLocation(presentShader, "windowSize")
+    glUseProgram(presentShader)
+    glUniform1i(glGetUniformLocation(presentShader, "trails"), 0)
+    glUseProgram(0)
     # Init overlay (trails)
     bgVao = glGenVertexArrays(1)
     glBindVertexArray(bgVao)
@@ -153,7 +204,9 @@ def shutdown() -> None:
     impl.shutdown()
 
 def renderSim() -> None:
-    glViewport(0, 0, *glfw.get_framebuffer_size(window))
+    # Draw in the trails image
+    glBindFramebuffer(GL_FRAMEBUFFER, trailsFramebuffer)
+    glViewport(0, 0, *trailsSize)
     # Background render
     if parameters.FADING_TRAILS:
         # Render overlay - semi transparent overlay
@@ -164,10 +217,23 @@ def renderSim() -> None:
     else:
         glClearColor(0.125,0.125,0.125,1)
         glClear(GL_COLOR_BUFFER_BIT)
-    # Boids
+    # Boids, added to the pixel (a fraction of their color): overlapping boids are brighter
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE)
     glUseProgram(shader)
+    glUniform1f(intensityLocation, parameters.BOID_INTENSITY)
     glBindVertexArray(boidVao)
     glDrawArrays(GL_POINTS, 0, parameters.POPULATION)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    # Draw the trails image in the window (full screen triangle, opaque)
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    width, height = glfw.get_framebuffer_size(window)
+    glViewport(0, 0, width, height)
+    glUseProgram(presentShader)
+    glUniform2f(windowSizeLocation, width, height)
+    glBindTexture(GL_TEXTURE_2D, trailsTexture)
+    glBindVertexArray(bgVao)
+    glDrawArrays(GL_TRIANGLES, 0, 3)
+    glBindTexture(GL_TEXTURE_2D, 0)
     glBindVertexArray(0)
     glUseProgram(0)
 
@@ -175,7 +241,7 @@ def renderGUI(frameTime: float) -> None:
     global parameters
     impl.process_inputs()
     imgui.new_frame()
-    imgui.set_next_window_size(imgui.ImVec2(600, 300))
+    imgui.set_next_window_size(imgui.ImVec2(600, 320))
     imgui.set_next_window_pos(imgui.ImVec2(0, 0))
     _ = imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize | imgui.WindowFlags_.no_background)
     _,parameters.COHESION = imgui.slider_float('COHESION', parameters.COHESION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
@@ -185,6 +251,7 @@ def renderGUI(frameTime: float) -> None:
     parameters.SEPARATION_DIST = separationPercent / 100
     _,parameters.SEPARATION_FALLOFF = imgui.slider_float('SEPARATION FALLOFF', parameters.SEPARATION_FALLOFF, 0.0, 4.0, '%.2f')
     _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f')
+    _,parameters.BOID_INTENSITY = imgui.slider_float('BOID INTENSITY', parameters.BOID_INTENSITY, 0.1, 5.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.WRAP_AROUND = imgui.checkbox("WRAP AROUND", parameters.WRAP_AROUND)
     imgui.same_line(spacing=40)
     _,parameters.SPOTLIGHT = imgui.checkbox("SPOTLIGHT", parameters.SPOTLIGHT)
