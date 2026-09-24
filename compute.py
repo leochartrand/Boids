@@ -8,6 +8,10 @@ import math
 TILE_SIZE = 128
 # Blocks per cell: each takes every CELL_BLOCKS-th group of TILE_SIZE agents of the cell
 CELL_BLOCKS = 8
+# Movement (SPEED, turning) is set per frame at this frame rate, and scaled for longer or shorter frames
+REFERENCE_FPS = 60
+# Longest time step in seconds, so a pause (e.g. dragging the window) doesn't make agents jump
+MAX_TIME_STEP = 0.1
 
 def init(settings):
     #Validation
@@ -43,7 +47,7 @@ def init(settings):
     #######################################
     # Arrays
     #######################################
-    global boids, sortedBoids, steering, frameCounter, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
+    global boids, sortedBoids, steering, frameCounter, timeStep, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
     # Boids - (x, y, dx, dy) for every agent, in agent order
     tempBoids = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
@@ -59,6 +63,8 @@ def init(settings):
     steering = cp.zeros((POPULATION, 2), dtype=cp.float32)
     # Frame counter, seeds the random sampling of candidates (kernel arguments are fixed in the graph)
     frameCounter = cp.zeros(1, dtype=cp.int32)
+    # Time step, in frames at REFERENCE_FPS (in memory too, as kernel arguments are fixed in the graph)
+    timeStep = cp.ones(1, dtype=cp.float32)
     # Tables
     # Boid Table - List of every boid and their current cell, sorted by cell
     # (filled unsorted, then sorted into a second table so both keep their memory)
@@ -82,11 +88,12 @@ def init(settings):
                 col += 1
     lookUpTable = cuda.to_device(tempLookUpTable)
     # Numba views of the CuPy arrays, made once: converting CuPy arrays on every launch is slow
-    global nbBoids, nbSortedBoids, nbSteering, nbFrameCounter, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
+    global nbBoids, nbSortedBoids, nbSteering, nbFrameCounter, nbTimeStep, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
     nbBoids = cuda.as_cuda_array(boids)
     nbSortedBoids = cuda.as_cuda_array(sortedBoids)
     nbSteering = cuda.as_cuda_array(steering)
     nbFrameCounter = cuda.as_cuda_array(frameCounter)
+    nbTimeStep = cuda.as_cuda_array(timeStep)
     nbCellIndexTable = cuda.as_cuda_array(cellIndexTable)
     nbCellEndTable = cuda.as_cuda_array(cellEndTable)
     nbBoidPositionTable = cuda.as_cuda_array(boidPositionTable)
@@ -100,7 +107,7 @@ def init(settings):
     compileKernel(fillCellIndexTable, "void(int32[:,::1], int32[::1], int32[::1])")
     compileKernel(neighborSearch, "void(float32[:,::1], float32[:,::1], int32[:,::1], int32[::1], int32[::1], int32[:,::1], float32[:,::1], int32[::1], "
         "boolean, boolean, float32, float32, float32, float32, int32)")
-    compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], boolean, float32)")
+    compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], boolean, float32)")
     #######################################
     # Stream and CUDA graph
     #######################################
@@ -125,7 +132,8 @@ def compileKernel(kernel, signature):
 #######################################
 
 # renderData - (x, y, color) for every agent, the mapped OpenGL vertex buffer
-def update(params, renderData):
+# dt - time since the last update, in seconds
+def update(params, renderData, dt):
     global graph, graphKey
     updateParams(params)
     # Kernel arguments and array addresses are recorded in the graph,
@@ -140,6 +148,8 @@ def update(params, renderData):
             finally:
                 graph = stream.end_capture()
         graphKey = key
+    with stream:
+        timeStep.fill(min(dt, MAX_TIME_STEP) * REFERENCE_FPS)
     graph.launch(stream)
 
 # Launches one simulation step on the stream (recorded into the graph, not executed)
@@ -162,7 +172,7 @@ def recordFrame(renderData):
     neighborSearch[(GRID_SIZE, CELL_BLOCKS), TILE_SIZE, nbStream](nbSortedBoids, nbSteering, lookUpTable, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, renderData,
         nbFrameCounter, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, CANDIDATE_BUDGET)
     # Update positions and write to render buffer
-    writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, WRAP_AROUND, SPEED)
+    writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, WRAP_AROUND, SPEED)
 
 # Update parameters with GUI input
 def updateParams(params):
@@ -373,61 +383,74 @@ def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTa
 # Gets final direction and position and writes to memory (back in agent order)
 # sortedBoids, steering -> boids, renderData
 @cuda.jit(fastmath=True)
-def writeData(boids, sortedBoids, steering, boidPositionTable, renderData, WRAP_AROUND, SPEED):
+def writeData(boids, sortedBoids, steering, boidPositionTable, renderData, timeStep, WRAP_AROUND, SPEED):
     slot = cuda.grid(1)
     if slot >= POPULATION:
         return
     index = boidPositionTable[slot,0]
     x, y = sortedBoids[slot,0], sortedBoids[slot,1]
     # Previous direction
-    pdx, pdy = sortedBoids[slot,2], sortedBoids[slot,3]
-    dx, dy = steering[slot,0], steering[slot,1]
-    # If Edge Wrapping is off, avoid walls
+    dx, dy = sortedBoids[slot,2], sortedBoids[slot,3]
+    # Direction given by the rules
+    steerX, steerY = steering[slot,0], steering[slot,1]
+    # Frames at REFERENCE_FPS since the last update. The rule below is made for one such frame:
+    # it's applied once per whole frame, and partly for what remains, so that agents turn and
+    # move the same way whatever the frame rate (the rules themselves are evaluated once per frame)
+    remaining = timeStep[0]
     MARGIN = float32(200.0)
-    if not WRAP_AROUND:
+    while remaining > float32(0.0):
+        part = min(remaining, float32(1.0))
+        remaining -= float32(1.0)
+        # If Edge Wrapping is off, avoid walls
         wallX, wallY = float32(0.0), float32(0.0)
-        x2 = WIDTH - x
-        y2 = HEIGHT - y
-        if x < MARGIN:
-            wallX = MARGIN - x
-            wallX /= MARGIN
-            wallX = wallX ** 2
-        elif x2 < MARGIN:
-            wallX = MARGIN - x2
-            wallX /= MARGIN
-            wallX = wallX ** 2
-            wallX = -wallX
-        if y < MARGIN:
-            wallY = MARGIN - y
-            wallY /= MARGIN
-            wallY = wallY ** 2
-        elif y2 < MARGIN:
-            wallY = MARGIN - y2
-            wallY /= MARGIN
-            wallY = wallY ** 2
-            wallY = -wallY
-        dx += wallX / float32(10.0)
-        dy += wallY / float32(10.0)
-    # Update directions
-    dx = pdx + dx * float32(3.0) # Weight w, ratio of 1:w with old/new direction
-    dy = pdy + dy * float32(3.0)
-    # Clamp speed
-    l = math.sqrt(dx**2 + dy**2)
-    if l > float32(1.0):
-        dx, dy = dx / l, dy / l
-    # Move position
-    x += dx * SPEED
-    y += dy * SPEED
-    # Edge wrap
-    if WRAP_AROUND:
-        if x >= WIDTH:
-            x = float32(0.0)
-        elif x < float32(0.0):
-            x = WIDTH
-        if y >= HEIGHT:
-            y = float32(0.0)
-        elif y < float32(0.0):
-            y = HEIGHT
+        if not WRAP_AROUND:
+            x2 = WIDTH - x
+            y2 = HEIGHT - y
+            if x < MARGIN:
+                wallX = MARGIN - x
+                wallX /= MARGIN
+                wallX = wallX ** 2
+            elif x2 < MARGIN:
+                wallX = MARGIN - x2
+                wallX /= MARGIN
+                wallX = wallX ** 2
+                wallX = -wallX
+            if y < MARGIN:
+                wallY = MARGIN - y
+                wallY /= MARGIN
+                wallY = wallY ** 2
+            elif y2 < MARGIN:
+                wallY = MARGIN - y2
+                wallY /= MARGIN
+                wallY = wallY ** 2
+                wallY = -wallY
+        # Update directions
+        ndx = dx + (steerX + wallX / float32(10.0)) * float32(3.0) # Weight w, ratio of 1:w with old/new direction
+        ndy = dy + (steerY + wallY / float32(10.0)) * float32(3.0)
+        # Clamp speed
+        l = math.sqrt(ndx**2 + ndy**2)
+        if l > float32(1.0):
+            ndx, ndy = ndx / l, ndy / l
+        # Part of a frame: only part of the way to the new direction
+        if part < float32(1.0):
+            ndx = dx + (ndx - dx) * part
+            ndy = dy + (ndy - dy) * part
+        dx, dy = ndx, ndy
+        # Move position
+        move = SPEED * part
+        x += dx * move
+        y += dy * move
+        # Edge wrap
+        # (keeps the part of the move past the edge)
+        if WRAP_AROUND:
+            if x >= WIDTH:
+                x -= WIDTH
+            elif x < float32(0.0):
+                x += WIDTH
+            if y >= HEIGHT:
+                y -= HEIGHT
+            elif y < float32(0.0):
+                y += HEIGHT
     # Render coordinates
     rx = (x - HALF_WIDTH) / HALF_WIDTH
     ry = (y - HALF_HEIGHT) / HALF_HEIGHT

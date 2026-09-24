@@ -32,7 +32,7 @@ if not window:
     glfw.terminate()
     raise SystemExit("Could not create an OpenGL 4.6 window")
 glfw.make_context_current(window)
-# VSync: the simulation advances one step per frame, so the frame rate sets its speed
+# VSync
 glfw.swap_interval(1)
 
 showGUI = True
@@ -51,15 +51,16 @@ cp.init(util.parameters)
 lastTime = glfw.get_time()
 while not glfw.window_should_close(window):
     glfw.poll_events()
+    # Time since the last frame, in seconds: agents move according to it
+    now = glfw.get_time()
+    frameTime = now - lastTime
+    lastTime = now
     # Kernels write positions straight into the OpenGL vertex buffer
     with util.mappedBoidBuffer(cp.stream) as renderData:
-        cp.update(util.parameters, renderData)
+        cp.update(util.parameters, renderData, frameTime)
     util.renderSim()
-    now = glfw.get_time()
-    frameTime = (now - lastTime) * 1000
-    lastTime = now
     if showGUI:
-        util.renderGUI(frameTime)
+        util.renderGUI(frameTime * 1000)
     glfw.swap_buffers(window)
 # Quits when the window is closed
 util.shutdown()

@@ -78,7 +78,5 @@ This project is still a work in progress and more features might be added in the
  - Predators and species
  - Obstacle avoidance and goal seeking
  - Possibly moving on from Python/Numba to C/Cuda
- - Time-based movement: agents currently move a fixed step per frame, so the frame rate (synced with the screen) sets the speed of the simulation
- - There currently is a subtle issue with the Separation rule where certain patterns emerge when they shouldn't be
 
 The "*boids engine*" could also be used to support other examples of swarm intelligence such as ant routing or slime simulations. I am considering the possibility of redefining this project as particle system simulator...
