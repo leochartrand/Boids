@@ -33,17 +33,15 @@ cp.init(util.parameters)
 showGUI = True
 done = False
 while not done:
-    for event in pg.event.get(): 
-        if event.type == pg.QUIT or event.type == pg.K_ESCAPE: 
-              done = True 
+    for event in pg.event.get():
+        if event.type == pg.QUIT or event.type == pg.K_ESCAPE:
+              done = True
         if event.type == 768:
             showGUI = not showGUI
         util.processEvents(event)
-    util.backupGLState()
     cp.update(util.parameters)
     util.renderSim(cp.renderData)
     tickTime = clock.tick()
-    util.restoreGLState()
     if showGUI:
         util.renderGUI(tickTime)
     pg.display.flip()

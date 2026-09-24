@@ -23,8 +23,13 @@ class Parameters:
     SPOTLIGHT       : bool
     FADING_TRAILS   : bool
 
+OVERLAY = np.array((
+            -1.0,-1.0,
+            3.0,-1.0,
+            -1.0,3.0), dtype=np.float32)
+
 def init(size, params):
-    global shader, bgShader, impl, parameters
+    global shader, bgShader, impl, parameters, bgVao, bgVbo, boidVao, boidVbo
     parameters = params
     # Enable alpha blending (for fading trails)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -44,15 +49,30 @@ def init(size, params):
     bgShader = compileProgram(
         compileShader(vShader, GL_VERTEX_SHADER),
         compileShader(fShader, GL_FRAGMENT_SHADER))
+    # Init overlay (trails)
+    bgVao = glGenVertexArrays(1)
+    glBindVertexArray(bgVao)
+    bgVbo = glGenBuffers(1)
+    glBindBuffer(GL_ARRAY_BUFFER, bgVbo)
+    glBufferData(GL_ARRAY_BUFFER, OVERLAY.nbytes, OVERLAY, GL_STATIC_DRAW)
+    glEnableVertexAttribArray(0)
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, ctypes.c_void_p(0))
+    # Init Boids
+    boidVao = glGenVertexArrays(1)
+    glBindVertexArray(boidVao)
+    boidVbo = glGenBuffers(1)
+    glBindBuffer(GL_ARRAY_BUFFER, boidVbo)
+    glBufferData(GL_ARRAY_BUFFER, parameters.POPULATION * 3 * 4, None, GL_DYNAMIC_DRAW)
+    glEnableVertexAttribArray(0)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
+    glBindVertexArray(0)
+    glBindBuffer(GL_ARRAY_BUFFER, 0)
+
+    # GUI
     imgui.create_context()
     impl = PygameRenderer()
     io = imgui.get_io()
     io.display_size = size
-
-overlay = np.array((
-            -1.0,-1.0,
-            3.0,-1.0,
-            -1.0,3.0), dtype=np.float32)
 
 def renderSim(buffer):
     # Background render
@@ -60,31 +80,20 @@ def renderSim(buffer):
         # Render overlay - semi transparent overlay
         # for fading trails
         glUseProgram(bgShader)
-        vao = glGenVertexArrays(1)
-        glBindVertexArray(vao)
-        vbo = glGenBuffers(1)
-        glBindBuffer(GL_ARRAY_BUFFER, vbo)
-        glBufferData(GL_ARRAY_BUFFER, overlay.nbytes, overlay, GL_STATIC_DRAW)
-        glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, ctypes.c_void_p(0))
-        glBindVertexArray(vao)
+        glBindVertexArray(bgVao)
         glDrawArrays(GL_TRIANGLES, 0, 3)
     else:
         glClearColor(0.125,0.125,0.125,1)
         glClear(GL_COLOR_BUFFER_BIT)
     # Boids
     glUseProgram(shader)
-    array = np.copy(buffer)
-    array.flatten()
-    vao = glGenVertexArrays(1)
-    glBindVertexArray(vao)
-    vbo = glGenBuffers(1)
-    glBindBuffer(GL_ARRAY_BUFFER, vbo)
-    glBufferData(GL_ARRAY_BUFFER, array.nbytes, array, GL_STATIC_DRAW)
-    glEnableVertexAttribArray(0)
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
-    glBindVertexArray(vao)
+    glBindVertexArray(boidVao)
+    glBindBuffer(GL_ARRAY_BUFFER, boidVbo)
+    glBufferSubData(GL_ARRAY_BUFFER, 0, buffer.nbytes, buffer.get())
     glDrawArrays(GL_POINTS, 0, parameters.POPULATION)
+    glBindVertexArray(0)
+    glBindBuffer(GL_ARRAY_BUFFER, 0)
+    glUseProgram(0)
 
 def renderGUI(tickTime):
     global parameters
@@ -118,16 +127,3 @@ def renderGUI(tickTime):
 
 def processEvents(event):
     impl.process_event(event)
-
-def backupGLState():
-    global last_program, last_vertex_array, last_array_buffer, last_element_array_buffer
-    last_program = glGetIntegerv(GL_CURRENT_PROGRAM)
-    last_array_buffer = glGetIntegerv(GL_ARRAY_BUFFER_BINDING)
-    last_element_array_buffer = glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING)
-    last_vertex_array = glGetIntegerv(GL_VERTEX_ARRAY_BINDING)
-
-def restoreGLState():
-    glUseProgram(last_program)
-    glBindVertexArray(last_vertex_array)
-    glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer)
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer)
