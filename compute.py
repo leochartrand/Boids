@@ -38,8 +38,7 @@ def init(settings):
     #######################################
     # Arrays
     #######################################
-    global renderData, boids, sortedBoids, partials, lookUpTable, cellIndexTable, boidPositionTable
-    renderData = cp.zeros((POPULATION, 3), dtype=cp.float32)
+    global boids, sortedBoids, partials, lookUpTable, cellIndexTable, boidPositionTable, unsortedBoidPositionTable
     # Boids - (x, y, dx, dy) for every agent, in agent order
     tempBoids = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
@@ -55,11 +54,9 @@ def init(settings):
     partials = cp.zeros((9, POPULATION, 3), dtype=cp.float32)
     # Tables
     # Boid Table - List of every boid and their current cell, sorted by cell
-    tempBoidTable = np.zeros((POPULATION,2), dtype=np.int32)
-    for index, cell in enumerate(tempBoidTable):
-        cell[0] = index
-    # Sends array to GPU with CuPy instead of numba, to use CuPy methods
-    boidPositionTable = cp.asarray(tempBoidTable)
+    # (filled unsorted, then sorted into a second table so both keep their memory)
+    unsortedBoidPositionTable = cp.zeros((POPULATION,2), dtype=cp.int32)
+    boidPositionTable = cp.zeros((POPULATION,2), dtype=cp.int32)
     # Tables
     # Cell Index Table (gives start index of cell on sorted Boid Table)
     cellIndexTable = cp.zeros(GRID_SIZE, dtype=cp.int32)
@@ -76,30 +73,84 @@ def init(settings):
                 cell[col] = (x + i)%GRID_WIDTH + (y + j)%GRID_HEIGHT * GRID_WIDTH
                 col += 1
     lookUpTable = cuda.to_device(tempLookUpTable)
+    # Numba views of the CuPy arrays, made once: converting CuPy arrays on every launch is slow
+    global nbBoids, nbSortedBoids, nbPartials, nbCellIndexTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
+    nbBoids = cuda.as_cuda_array(boids)
+    nbSortedBoids = cuda.as_cuda_array(sortedBoids)
+    nbPartials = cuda.as_cuda_array(partials)
+    nbCellIndexTable = cuda.as_cuda_array(cellIndexTable)
+    nbBoidPositionTable = cuda.as_cuda_array(boidPositionTable)
+    nbUnsortedBoidPositionTable = cuda.as_cuda_array(unsortedBoidPositionTable)
+    #######################################
+    # Kernels
+    #######################################
+    # Compiled here, as they read the constants above. Fixed signatures: other scalar types are
+    # converted to these, arrays of other types raise, and no slower (e.g. float64) version is compiled
+    compileKernel(fillBoidPositionTable, "void(float32[:,::1], int32[:,::1], float32[:,::1])")
+    compileKernel(fillCellIndexTable, "void(int32[:,::1], int32[::1])")
+    compileKernel(neighborSearch, "void(float32[:,::1], float32[:,:,::1], int32[:,::1], int32[::1], int32[:,::1], float32[:,::1], "
+        "boolean, boolean, float32, float32, float32, float32)")
+    compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,:,::1], int32[:,::1], float32[:,::1], boolean, float32)")
+    #######################################
+    # Stream and CUDA graph
+    #######################################
+    # All simulation work runs on one non-blocking stream, so a frame can be recorded
+    # as a CUDA graph (the default stream can't be recorded)
+    global stream, nbStream, graph, graphKey, graphPool
+    stream = cp.cuda.Stream(non_blocking=True)
+    nbStream = cuda.external_stream(stream.ptr)
+    graph, graphKey = None, None
+    # Temporary arrays of a recorded frame (the sort) come from this pool, which nothing
+    # else uses, so their memory is never handed to other arrays while the graph uses it
+    graphPool = cp.cuda.MemoryPool()
+    # The arrays above were filled on the default stream
+    cp.cuda.Device().synchronize()
+
+def compileKernel(kernel, signature):
+    kernel.compile(signature)
+    kernel.disable_compile()
 
 #######################################
 # Update
 #######################################
 
-def update(params):
+# renderData - (x, y, color) for every agent, the mapped OpenGL vertex buffer
+def update(params, renderData):
+    global graph, graphKey
     updateParams(params)
-    global renderData, boids, sortedBoids, partials, lookUpTable, boidPositionTable, cellIndexTable
-    # Kernels are set to default stream and are executed sequentially
+    # Kernel arguments and array addresses are recorded in the graph,
+    # so it is recorded again when a parameter or the buffer address changes
+    key = (SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, WRAP_AROUND, SPOTLIGHT, renderData.data.ptr)
+    if key != graphKey:
+        nbRenderData = cuda.as_cuda_array(renderData, sync=False)
+        with stream, cp.cuda.using_allocator(graphPool.malloc):
+            stream.begin_capture()
+            try:
+                recordFrame(nbRenderData)
+            finally:
+                graph = stream.end_capture()
+        graphKey = key
+    graph.launch(stream)
+
+# Launches one simulation step on the stream (recorded into the graph, not executed)
+def recordFrame(renderData):
     # 512 threads per block, as many blocks as we need
     nthreads = 512
     nblocks = (POPULATION + (nthreads - 1)) // nthreads
-    fillBoidPositionTable[nblocks, nthreads](boids, boidPositionTable, renderData)
+    fillBoidPositionTable[nblocks, nthreads, nbStream](nbBoids, nbUnsortedBoidPositionTable, renderData)
     # CuPy sort, a bit faster than on CPU
-    boidPositionTable = boidPositionTable[cp.argsort(boidPositionTable[:,1])]
+    order = cp.argsort(unsortedBoidPositionTable[:,1])
+    cp.take(unsortedBoidPositionTable, order, axis=0, out=boidPositionTable)
     # Reorder agent data to match the sorted table
-    cp.take(boids, boidPositionTable[:,0], axis=0, out=sortedBoids)
+    cp.take(boids, order, axis=0, out=sortedBoids)
     # New index table according to data from sorted boid table
     cellIndexTable.fill(-1)
-    fillCellIndexTable[nblocks, nthreads](boidPositionTable, cellIndexTable)
+    fillCellIndexTable[nblocks, nthreads, nbStream](nbBoidPositionTable, nbCellIndexTable)
     # 2D kernel. X axis is sorted boids, Y axis is each of their 9 respective neighbor cells
-    neighborSearch[(nblocks,9), (nthreads,1)](sortedBoids, partials, lookUpTable, cellIndexTable, boidPositionTable, renderData, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
+    neighborSearch[(nblocks,9), (nthreads,1), nbStream](nbSortedBoids, nbPartials, lookUpTable, nbCellIndexTable, nbBoidPositionTable, renderData,
+        SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED)
     # Update positions and write to render buffer
-    writeData[nblocks, nthreads](boids, sortedBoids, partials, boidPositionTable, renderData, WRAP_AROUND, SPEED)
+    writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbPartials, nbBoidPositionTable, renderData, WRAP_AROUND, SPEED)
 
 # Update parameters with GUI input
 def updateParams(params):

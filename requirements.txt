@@ -3,7 +3,8 @@
 numpy==2.4.6
 numba==0.67.0
 numba-cuda[cu12]==0.30.4
+cuda-bindings==12.9.9
 cupy-cuda12x==14.2.0
-pygame==2.6.1
+glfw==2.10.2
 PyOpenGL==3.1.10
-imgui[pygame]==2.0.0
+imgui==2.0.0

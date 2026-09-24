@@ -1,10 +1,14 @@
+from contextlib import contextmanager
 from dataclasses import dataclass
 from OpenGL.GL import *
 import numpy as np
+import cupy as cp
+from cuda.bindings import runtime as cudart
 from OpenGL.GL.shaders import compileProgram, compileShader
 from numba.core.errors import NumbaPerformanceWarning
+import glfw
 import imgui
-from imgui.integrations.pygame import PygameRenderer
+from imgui.integrations.glfw import GlfwRenderer
 import warnings
 warnings.simplefilter('ignore', category=NumbaPerformanceWarning)
 
@@ -28,8 +32,17 @@ OVERLAY = np.array((
             3.0,-1.0,
             -1.0,3.0), dtype=np.float32)
 
-def init(size, params):
-    global shader, bgShader, impl, parameters, bgVao, bgVbo, boidVao, boidVbo
+# Raises on CUDA errors, returns the other values of a cuda-bindings call
+def checkCuda(result):
+    err, *values = result
+    if err != cudart.cudaError_t.cudaSuccess:
+        raise RuntimeError(f"CUDA error: {err.name}")
+    return values
+
+# onKey(key) is called for key presses that the GUI doesn't use
+def init(glfwWindow, params, onKey):
+    global window, shader, bgShader, impl, parameters, bgVao, bgVbo, boidVao, boidVbo, boidResource
+    window = glfwWindow
     parameters = params
     # Enable alpha blending (for fading trails)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -67,14 +80,40 @@ def init(size, params):
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
     glBindVertexArray(0)
     glBindBuffer(GL_ARRAY_BUFFER, 0)
+    # Register the boid buffer with CUDA so kernels can write to it directly.
+    # WriteDiscard: every frame overwrites all of it, so CUDA never needs its old content
+    boidResource, = checkCuda(cudart.cudaGraphicsGLRegisterBuffer(
+        int(boidVbo), cudart.cudaGraphicsRegisterFlags.cudaGraphicsRegisterFlagsWriteDiscard))
 
     # GUI
     imgui.create_context()
-    impl = PygameRenderer()
-    io = imgui.get_io()
-    io.display_size = size
+    impl = GlfwRenderer(window)
+    # Replaces the renderer's key callback, so forward keys to it first
+    def keyCallback(window, key, scancode, action, mods):
+        impl.keyboard_callback(window, key, scancode, action, mods)
+        if action == glfw.PRESS and not imgui.get_io().want_capture_keyboard:
+            onKey(key)
+    glfw.set_key_callback(window, keyCallback)
 
-def renderSim(buffer):
+# Maps the boid buffer for CUDA and yields it as a (POPULATION, 3) CuPy array.
+# Map/unmap run on the given stream, so work launched on it inside the block
+# finishes before OpenGL reads the buffer again
+@contextmanager
+def mappedBoidBuffer(stream):
+    checkCuda(cudart.cudaGraphicsMapResources(1, boidResource, stream.ptr))
+    try:
+        pointer, size = checkCuda(cudart.cudaGraphicsResourceGetMappedPointer(boidResource))
+        memory = cp.cuda.UnownedMemory(pointer, size, boidResource)
+        yield cp.ndarray((parameters.POPULATION, 3), dtype=cp.float32, memptr=cp.cuda.MemoryPointer(memory, 0))
+    finally:
+        checkCuda(cudart.cudaGraphicsUnmapResources(1, boidResource, stream.ptr))
+
+def shutdown():
+    checkCuda(cudart.cudaGraphicsUnregisterResource(boidResource))
+    impl.shutdown()
+
+def renderSim():
+    glViewport(0, 0, *glfw.get_framebuffer_size(window))
     # Background render
     if parameters.FADING_TRAILS:
         # Render overlay - semi transparent overlay
@@ -88,15 +127,13 @@ def renderSim(buffer):
     # Boids
     glUseProgram(shader)
     glBindVertexArray(boidVao)
-    glBindBuffer(GL_ARRAY_BUFFER, boidVbo)
-    glBufferSubData(GL_ARRAY_BUFFER, 0, buffer.nbytes, buffer.get())
     glDrawArrays(GL_POINTS, 0, parameters.POPULATION)
     glBindVertexArray(0)
-    glBindBuffer(GL_ARRAY_BUFFER, 0)
     glUseProgram(0)
 
-def renderGUI(tickTime):
+def renderGUI(frameTime):
     global parameters
+    impl.process_inputs()
     imgui.new_frame()
     imgui.set_next_window_size(600, 300)
     imgui.set_next_window_position(0, 0)
@@ -116,7 +153,7 @@ def renderGUI(tickTime):
     if imgui.radio_button("FADING_TRAILS", parameters.FADING_TRAILS):
         parameters.FADING_TRAILS = not parameters.FADING_TRAILS
     # imgui.same_line(spacing=20)
-    imgui.text(f"ms/frame: {tickTime}")
+    imgui.text(f"ms/frame: {frameTime:.1f}")
     imgui.push_style_var(imgui.STYLE_ALPHA, 0.2)
     imgui.text("(Press SPACE to hide)")
     imgui.pop_style_var(1)
@@ -124,6 +161,3 @@ def renderGUI(tickTime):
     imgui.end_frame()
     imgui.render()
     impl.render(imgui.get_draw_data())
-
-def processEvents(event):
-    impl.process_event(event)

@@ -1,6 +1,4 @@
-from os import environ
-environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
-import pygame as pg
+import glfw
 import compute as cp
 import util
 ##############################################################################
@@ -20,30 +18,46 @@ WIDTH  = (NEIGHBOR_DIST) * 36*2
 HEIGHT = (NEIGHBOR_DIST) * 20*2
 ##############################################################################
 # Initialisation
-pg.init()
-SCREEN_SIZE = (WIDTH,HEIGHT)
-clock = pg.time.Clock()
-pg.display.set_caption("Boids")
-screen = pg.display.set_mode(SCREEN_SIZE, pg.OPENGL|pg.DOUBLEBUF)
-util.init(SCREEN_SIZE, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
-    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS))
+if not glfw.init():
+    raise SystemExit("Could not initialise GLFW")
+glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
+glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 6)
+glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+glfw.window_hint(glfw.RESIZABLE, False)
+window = glfw.create_window(WIDTH, HEIGHT, "Boids", None, None)
+if not window:
+    glfw.terminate()
+    raise SystemExit("Could not create an OpenGL 4.6 window")
+glfw.make_context_current(window)
+# VSync: the simulation advances one step per frame, so the frame rate sets its speed
+glfw.swap_interval(1)
+
+showGUI = True
+def onKey(key):
+    global showGUI
+    if key == glfw.KEY_ESCAPE:
+        glfw.set_window_should_close(window, True)
+    elif key == glfw.KEY_SPACE:
+        showGUI = not showGUI
+
+util.init(window, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
+    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS), onKey)
 cp.init(util.parameters)
 ##############################################################################
 # Simulation loop
-showGUI = True
-done = False
-while not done:
-    for event in pg.event.get():
-        if event.type == pg.QUIT or event.type == pg.K_ESCAPE:
-              done = True
-        if event.type == 768:
-            showGUI = not showGUI
-        util.processEvents(event)
-    cp.update(util.parameters)
-    util.renderSim(cp.renderData)
-    tickTime = clock.tick()
+lastTime = glfw.get_time()
+while not glfw.window_should_close(window):
+    glfw.poll_events()
+    # Kernels write positions straight into the OpenGL vertex buffer
+    with util.mappedBoidBuffer(cp.stream) as renderData:
+        cp.update(util.parameters, renderData)
+    util.renderSim()
+    now = glfw.get_time()
+    frameTime = (now - lastTime) * 1000
+    lastTime = now
     if showGUI:
-        util.renderGUI(tickTime)
-    pg.display.flip()
-# Quits when game is over
-pg.quit()
+        util.renderGUI(frameTime)
+    glfw.swap_buffers(window)
+# Quits when the window is closed
+util.shutdown()
+glfw.terminate()
