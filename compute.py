@@ -61,7 +61,7 @@ def init(settings: Parameters) -> None:
     #######################################
     # Arrays
     #######################################
-    global boids, sortedBoids, steering, frameCounter, timeStep, wanderAngles, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
+    global boids, sortedBoids, steering, frameCounter, timeStep, cursor, wanderAngles, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
     # Boids - (x, y, dx, dy) for every agent, in agent order
     tempBoids = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
@@ -79,6 +79,8 @@ def init(settings: Parameters) -> None:
     frameCounter = cp.zeros(1, dtype=cp.int32)
     # Time step, in frames at REFERENCE_FPS (in memory too, as kernel arguments are fixed in the graph)
     timeStep = cp.ones(1, dtype=cp.float32)
+    # Cursor - (x, y, mode) in the simulated space, mode 1 attracts, -1 repels, 0 off (in memory too)
+    cursor = cp.zeros(3, dtype=cp.float32)
     # Wander Angles - where each agent's wander target is on its circle, in agent order
     wanderAngles = cp.zeros(POPULATION, dtype=cp.float32)
     # Tables
@@ -104,12 +106,13 @@ def init(settings: Parameters) -> None:
                 col += 1
     lookUpTable = cuda.to_device(tempLookUpTable)
     # Numba views of the CuPy arrays, made once: converting CuPy arrays on every launch is slow
-    global nbBoids, nbSortedBoids, nbSteering, nbFrameCounter, nbTimeStep, nbWanderAngles, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
+    global nbBoids, nbSortedBoids, nbSteering, nbFrameCounter, nbTimeStep, nbCursor, nbWanderAngles, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
     nbBoids = cuda.as_cuda_array(boids)
     nbSortedBoids = cuda.as_cuda_array(sortedBoids)
     nbSteering = cuda.as_cuda_array(steering)
     nbFrameCounter = cuda.as_cuda_array(frameCounter)
     nbTimeStep = cuda.as_cuda_array(timeStep)
+    nbCursor = cuda.as_cuda_array(cursor)
     nbWanderAngles = cuda.as_cuda_array(wanderAngles)
     nbCellIndexTable = cuda.as_cuda_array(cellIndexTable)
     nbCellEndTable = cuda.as_cuda_array(cellEndTable)
@@ -125,7 +128,7 @@ def init(settings: Parameters) -> None:
     compileKernel(neighborSearch, "void(float32[:,::1], float32[:,::1], int32[:,::1], int32[::1], int32[::1], int32[:,::1], float32[:,::1], int32[::1], "
         + "boolean, boolean, float32, float32, float32, float32, float32)")
     compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], int32[::1], float32[::1], "
-        + "boolean, float32, float32, float32, float32)")
+        + "float32[::1], boolean, float32, float32, float32, float32, float32, float32)")
     #######################################
     # Stream and CUDA graph
     #######################################
@@ -151,12 +154,13 @@ def compileKernel(kernel: CUDADispatcher, signature: str) -> None:
 
 # renderData - (x, y, color) for every agent, the mapped OpenGL vertex buffer
 # dt - time since the last update, in seconds
-def update(params: Parameters, renderData: cp.ndarray, dt: float) -> None:
+# cursorInput - (x, y, mode) of the cursor in the simulated space, mode 1 attracts, -1 repels, 0 off (default)
+def update(params: Parameters, renderData: cp.ndarray, dt: float, cursorInput: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> None:
     global graph, graphKey
     updateParams(params)
     # Kernel arguments and array addresses are recorded in the graph,
     # so it is recorded again when a parameter or the buffer address changes
-    key = (speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight, jitter, wander, wanderRate, renderData.data.ptr)
+    key = (speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight, jitter, wander, wanderRate, cursorAttention, cursorRadius, renderData.data.ptr)
     if key != graphKey:
         nbRenderData = cuda.as_cuda_array(renderData, sync=False)
         with stream, cp.cuda.using_allocator(graphPool.malloc):
@@ -168,6 +172,7 @@ def update(params: Parameters, renderData: cp.ndarray, dt: float) -> None:
         graphKey = key
     with stream:
         timeStep.fill(min(dt, MAX_TIME_STEP) * REFERENCE_FPS)
+        cursor.set(np.array(cursorInput, dtype=np.float32), stream=stream)
     assert graph is not None # recorded above on the first update
     graph.launch(stream)
 
@@ -192,12 +197,12 @@ def recordFrame(renderData: DeviceNDArray) -> None:
         nbFrameCounter, spotlight, wrapAround, cohesion, alignment, separation, separationDistSquared, separationFalloff)
     # Update positions and write to render buffer
     writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, nbFrameCounter,
-        nbWanderAngles, wrapAround, speed, jitter, wander, wanderRate)
+        nbWanderAngles, nbCursor, wrapAround, speed, jitter, wander, wanderRate, cursorAttention, cursorRadius)
 
 # Update parameters with GUI input (settings that can change while running)
 def updateParams(params: Parameters) -> None:
     global speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight
-    global jitter, wander, wanderRate
+    global jitter, wander, wanderRate, cursorAttention, cursorRadius
     # Kernel arguments are float32, Python floats would arrive as float64
     speed = np.float32(params.SPEED)
     cohesion = np.float32(params.COHESION)
@@ -210,6 +215,8 @@ def updateParams(params: Parameters) -> None:
     jitter = np.float32(params.JITTER)
     wander = np.float32(params.WANDER)
     wanderRate = np.float32(math.radians(params.WANDER_RATE))
+    cursorAttention = np.float32(min(max(params.CURSOR_ATTENTION, 0.0), 1.0))
+    cursorRadius = np.float32(max(1.0, params.CURSOR_RADIUS))
 
 
 #######################################
@@ -304,6 +311,8 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
         directionSquared = dx**2 + dy**2
         # Separation radius
         separationDist = math.sqrt(SEPARATION_DIST_SQUARED)
+        # The linear falloff (1, the default) skips pow, which is slow: this runs for most candidates in dense flocks
+        powFalloff = SEPARATION_FALLOFF != float32(1.0)
         # Boid direction
         resX, resY = float32(0.0), float32(0.0)
         numNeighbors = 0
@@ -370,7 +379,10 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
                                 # (0: same push at any distance, 1: linear, higher: mostly at close range)
                                 # (distLengthSquared > 0 here, as agents at the same position aren't neighbors)
                                 dist = math.sqrt(distLengthSquared)
-                                push = math.pow(float32(1.0) - dist / separationDist, SEPARATION_FALLOFF) / dist # / dist: (distX, distY) to unit length
+                                push = float32(1.0) - dist / separationDist
+                                if powFalloff:
+                                    push = math.pow(push, SEPARATION_FALLOFF)
+                                push /= dist # (distX, distY) to unit length
                                 separationX += distX * push
                                 separationY += distY * push
                                 numSeparation += 1
@@ -421,7 +433,8 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
 @cuda.jit(fastmath=True)
 def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: DeviceNDArray, boidPositionTable: DeviceNDArray,
         renderData: DeviceNDArray, timeStep: DeviceNDArray, frameCounter: DeviceNDArray, wanderAngles: DeviceNDArray,
-        WRAP_AROUND: bool, SPEED: np.float32, JITTER: np.float32, WANDER: np.float32, WANDER_RATE: np.float32) -> None:
+        cursor: DeviceNDArray, WRAP_AROUND: bool, SPEED: np.float32, JITTER: np.float32, WANDER: np.float32,
+        WANDER_RATE: np.float32, CURSOR_ATTENTION: np.float32, CURSOR_RADIUS: np.float32) -> None:
     slot = cuda.grid(1)
     if slot >= POPULATION:
         return
@@ -439,6 +452,7 @@ def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: Device
     # Sub-step number, for the random numbers
     subStep = 0
     wanderAngle = wanderAngles[index]
+    cursorX, cursorY, cursorMode = cursor[0], cursor[1], cursor[2]
     while remaining > float32(0.0):
         part = min(remaining, float32(1.0))
         remaining -= float32(1.0)
@@ -495,6 +509,27 @@ def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: Device
         l = math.sqrt(ndx**2 + ndy**2)
         if l > float32(1.0):
             ndx, ndy = ndx / l, ndy / l
+        # Cursor: takes a share of the agent's attention, CURSOR_ATTENTION next to the cursor and fading
+        # to 0 at CURSOR_RADIUS. The new direction is that share of "straight towards the cursor (or away
+        # from it, cursorMode -1), at full speed", and the rest of what the rules gave
+        if cursorMode != float32(0.0):
+            toCursorX, toCursorY = cursorX - x, cursorY - y
+            if WRAP_AROUND:
+                # Shortest way, over the edges
+                if toCursorX > HALF_WIDTH:
+                    toCursorX -= WIDTH
+                elif toCursorX < -HALF_WIDTH:
+                    toCursorX += WIDTH
+                if toCursorY > HALF_HEIGHT:
+                    toCursorY -= HEIGHT
+                elif toCursorY < -HALF_HEIGHT:
+                    toCursorY += HEIGHT
+            cursorDist = math.sqrt(toCursorX**2 + toCursorY**2)
+            if cursorDist < CURSOR_RADIUS and cursorDist > float32(0.0):
+                attention = CURSOR_ATTENTION * (float32(1.0) - cursorDist / CURSOR_RADIUS)
+                towards = cursorMode / cursorDist
+                ndx += (toCursorX * towards - ndx) * attention
+                ndy += (toCursorY * towards - ndy) * attention
         # Part of a frame: only part of the way to the new direction
         if part < float32(1.0):
             ndx = dx + (ndx - dx) * part

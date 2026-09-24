@@ -91,6 +91,9 @@ class Parameters:
     JITTER: float = 0.0
     WANDER: float = 0.0
     WANDER_RATE: float = 10.0
+    CURSOR_ATTENTION: float = 0.5
+    CURSOR_RADIUS: float = 400.0
+    CURSOR_REPEL: bool = False
 
 OVERLAY = np.array((
             -1.0,-1.0,
@@ -240,13 +243,32 @@ def renderSim() -> None:
     glBindVertexArray(0)
     glUseProgram(0)
 
+# Cursor position in the simulated space and mode: 1 attracts, -1 repels, 0 off.
+# The left button does what the ATTRACT/REPEL switch says, the right button the opposite;
+# off when no button is held or when the GUI uses the mouse
+def cursorInput() -> tuple[float, float, float]:
+    mode = 0.0
+    if not imgui.get_io().want_capture_mouse:
+        selected = -1.0 if parameters.CURSOR_REPEL else 1.0
+        if glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS:
+            mode = selected
+        elif glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS:
+            mode = -selected
+    x, y = glfw.get_cursor_pos(window)
+    width, height = glfw.get_window_size(window)
+    # Window y goes down, the simulated space's y goes up
+    return x / width * parameters.WIDTH, (1.0 - y / height) * parameters.HEIGHT, mode
+
 def renderGUI(frameTime: float) -> None:
     global parameters
     impl.process_inputs()
     imgui.new_frame()
-    imgui.set_next_window_size(imgui.ImVec2(600, 380))
+    # Height 0: fits the content
+    imgui.set_next_window_size(imgui.ImVec2(600, 0))
     imgui.set_next_window_pos(imgui.ImVec2(0, 0))
-    _ = imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize | imgui.WindowFlags_.no_background)
+    # Grey, half transparent background
+    imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(0.2, 0.2, 0.2, 0.5))
+    _ = imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize)
     _,parameters.COHESION = imgui.slider_float('COHESION', parameters.COHESION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.ALIGNMENT = imgui.slider_float('ALIGNMENT', parameters.ALIGNMENT, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.SEPARATION = imgui.slider_float('SEPARATION', parameters.SEPARATION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
@@ -257,16 +279,27 @@ def renderGUI(frameTime: float) -> None:
     _,parameters.JITTER = imgui.slider_float('JITTER', parameters.JITTER, 0.0, 1.0, '%.3f', imgui.SliderFlags_.logarithmic)
     _,parameters.WANDER = imgui.slider_float('WANDER', parameters.WANDER, 0.0, 1.0, '%.3f', imgui.SliderFlags_.logarithmic)
     _,parameters.WANDER_RATE = imgui.slider_float('WANDER RATE', parameters.WANDER_RATE, 0.0, 60.0, '%.1f deg')
+    _,attentionPercent = imgui.slider_float('CURSOR ATTENTION', parameters.CURSOR_ATTENTION * 100, 0.0, 100.0, '%.0f%%')
+    parameters.CURSOR_ATTENTION = attentionPercent / 100
+    _,parameters.CURSOR_RADIUS = imgui.slider_float('CURSOR RADIUS', parameters.CURSOR_RADIUS, 50.0, 2000.0, '%.0f px', imgui.SliderFlags_.logarithmic)
     _,parameters.BOID_INTENSITY = imgui.slider_float('BOID INTENSITY', parameters.BOID_INTENSITY, 0.1, 5.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.WRAP_AROUND = imgui.checkbox("WRAP AROUND", parameters.WRAP_AROUND)
     imgui.same_line(spacing=40)
     _,parameters.SPOTLIGHT = imgui.checkbox("SPOTLIGHT", parameters.SPOTLIGHT)
     imgui.same_line(spacing=45)
     _,parameters.FADING_TRAILS = imgui.checkbox("FADING_TRAILS", parameters.FADING_TRAILS)
+    imgui.text("CURSOR:")
+    imgui.same_line()
+    if imgui.radio_button("ATTRACT", not parameters.CURSOR_REPEL):
+        parameters.CURSOR_REPEL = False
+    imgui.same_line()
+    if imgui.radio_button("REPEL", parameters.CURSOR_REPEL):
+        parameters.CURSOR_REPEL = True
     imgui.text(f"ms/frame: {frameTime:.1f}")
     imgui.push_style_var(imgui.StyleVar_.alpha, 0.2)
-    imgui.text("(Press SPACE to hide)")
+    imgui.text("(Hold left click to use the cursor, right click for the opposite, SPACE to hide)")
     imgui.pop_style_var(1)
     imgui.end()
+    imgui.pop_style_color()
     imgui.render()
     impl.render(imgui.get_draw_data())
