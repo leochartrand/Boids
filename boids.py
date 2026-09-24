@@ -3,7 +3,7 @@ import compute as cp
 import util
 ##############################################################################
 # Simulation parameters
-POPULATION = 100000
+POPULATION = 1000000
 SPEED = 2.0
 COHESION = 0.01
 ALIGNMENT = 0.2
@@ -13,6 +13,9 @@ SEPARATION_DIST = 0.4 # % of NEIGHBOR_DIST
 WRAP_AROUND = False
 SPOTLIGHT = False
 FADING_TRAILS = True
+# Max agents tested per neighbor search. Above it, a random sample is tested:
+# much faster in dense clumps, but separation gets noisier and weaker there
+CANDIDATE_BUDGET = 2048
 # Window size
 WIDTH  = (NEIGHBOR_DIST) * 36*2
 HEIGHT = (NEIGHBOR_DIST) * 20*2
@@ -41,7 +44,7 @@ def onKey(key):
         showGUI = not showGUI
 
 util.init(window, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
-    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS), onKey)
+    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET), onKey)
 cp.init(util.parameters)
 ##############################################################################
 # Simulation loop

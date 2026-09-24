@@ -26,6 +26,7 @@ class Parameters:
     WRAP_AROUND     : bool
     SPOTLIGHT       : bool
     FADING_TRAILS   : bool
+    CANDIDATE_BUDGET: int = 2048
 
 OVERLAY = np.array((
             -1.0,-1.0,
@@ -144,6 +145,7 @@ def renderGUI(frameTime):
     _,parameters.SEPARATION_DIST = imgui.slider_int('NEIGHBOR/SEPARATION RATIO', int(parameters.SEPARATION_DIST*100), 0, 100, '%d%%')
     parameters.SEPARATION_DIST /= 100
     _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f', 1.0)
+    _,parameters.CANDIDATE_BUDGET = imgui.slider_int('CANDIDATE BUDGET', parameters.CANDIDATE_BUDGET, 16, 16384, '%d', imgui.SLIDER_FLAGS_LOGARITHMIC)
     if imgui.radio_button("WRAP AROUND", parameters.WRAP_AROUND):
         parameters.WRAP_AROUND = not parameters.WRAP_AROUND
     imgui.same_line(spacing=40)
