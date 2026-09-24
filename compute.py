@@ -28,6 +28,9 @@ CELL_BLOCKS = 128
 REFERENCE_FPS = 60
 # Longest time step in seconds, so a pause (e.g. dragging the window) doesn't make agents jump
 MAX_TIME_STEP = 0.1
+# Wander (Reynolds): radius of the circle the wander target moves on, ahead of the agent at a distance of 1.
+# The target is then at most 30 degrees off the agent's direction
+WANDER_RADIUS = np.float32(0.5)
 
 def init(settings: Parameters) -> None:
     #Validation
@@ -58,7 +61,7 @@ def init(settings: Parameters) -> None:
     #######################################
     # Arrays
     #######################################
-    global boids, sortedBoids, steering, frameCounter, timeStep, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
+    global boids, sortedBoids, steering, frameCounter, timeStep, wanderAngles, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
     # Boids - (x, y, dx, dy) for every agent, in agent order
     tempBoids = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
@@ -76,6 +79,8 @@ def init(settings: Parameters) -> None:
     frameCounter = cp.zeros(1, dtype=cp.int32)
     # Time step, in frames at REFERENCE_FPS (in memory too, as kernel arguments are fixed in the graph)
     timeStep = cp.ones(1, dtype=cp.float32)
+    # Wander Angles - where each agent's wander target is on its circle, in agent order
+    wanderAngles = cp.zeros(POPULATION, dtype=cp.float32)
     # Tables
     # Boid Table - List of every boid and their current cell, sorted by cell
     # (filled unsorted, then sorted into a second table so both keep their memory)
@@ -99,12 +104,13 @@ def init(settings: Parameters) -> None:
                 col += 1
     lookUpTable = cuda.to_device(tempLookUpTable)
     # Numba views of the CuPy arrays, made once: converting CuPy arrays on every launch is slow
-    global nbBoids, nbSortedBoids, nbSteering, nbFrameCounter, nbTimeStep, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
+    global nbBoids, nbSortedBoids, nbSteering, nbFrameCounter, nbTimeStep, nbWanderAngles, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
     nbBoids = cuda.as_cuda_array(boids)
     nbSortedBoids = cuda.as_cuda_array(sortedBoids)
     nbSteering = cuda.as_cuda_array(steering)
     nbFrameCounter = cuda.as_cuda_array(frameCounter)
     nbTimeStep = cuda.as_cuda_array(timeStep)
+    nbWanderAngles = cuda.as_cuda_array(wanderAngles)
     nbCellIndexTable = cuda.as_cuda_array(cellIndexTable)
     nbCellEndTable = cuda.as_cuda_array(cellEndTable)
     nbBoidPositionTable = cuda.as_cuda_array(boidPositionTable)
@@ -118,7 +124,8 @@ def init(settings: Parameters) -> None:
     compileKernel(fillCellIndexTable, "void(int32[:,::1], int32[::1], int32[::1])")
     compileKernel(neighborSearch, "void(float32[:,::1], float32[:,::1], int32[:,::1], int32[::1], int32[::1], int32[:,::1], float32[:,::1], int32[::1], "
         + "boolean, boolean, float32, float32, float32, float32, float32)")
-    compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], boolean, float32)")
+    compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], int32[::1], float32[::1], "
+        + "boolean, float32, float32, float32, float32)")
     #######################################
     # Stream and CUDA graph
     #######################################
@@ -149,7 +156,7 @@ def update(params: Parameters, renderData: cp.ndarray, dt: float) -> None:
     updateParams(params)
     # Kernel arguments and array addresses are recorded in the graph,
     # so it is recorded again when a parameter or the buffer address changes
-    key = (speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight, renderData.data.ptr)
+    key = (speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight, jitter, wander, wanderRate, renderData.data.ptr)
     if key != graphKey:
         nbRenderData = cuda.as_cuda_array(renderData, sync=False)
         with stream, cp.cuda.using_allocator(graphPool.malloc):
@@ -184,11 +191,13 @@ def recordFrame(renderData: DeviceNDArray) -> None:
     neighborSearch[(GRID_SIZE, CELL_BLOCKS), TILE_SIZE, nbStream](nbSortedBoids, nbSteering, lookUpTable, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, renderData,
         nbFrameCounter, spotlight, wrapAround, cohesion, alignment, separation, separationDistSquared, separationFalloff)
     # Update positions and write to render buffer
-    writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, wrapAround, speed)
+    writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, nbFrameCounter,
+        nbWanderAngles, wrapAround, speed, jitter, wander, wanderRate)
 
 # Update parameters with GUI input (settings that can change while running)
 def updateParams(params: Parameters) -> None:
     global speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight
+    global jitter, wander, wanderRate
     # Kernel arguments are float32, Python floats would arrive as float64
     speed = np.float32(params.SPEED)
     cohesion = np.float32(params.COHESION)
@@ -198,6 +207,9 @@ def updateParams(params: Parameters) -> None:
     separationFalloff = np.float32(params.SEPARATION_FALLOFF)
     wrapAround = params.WRAP_AROUND
     spotlight = params.SPOTLIGHT
+    jitter = np.float32(params.JITTER)
+    wander = np.float32(params.WANDER)
+    wanderRate = np.float32(math.radians(params.WANDER_RATE))
 
 
 #######################################
@@ -408,7 +420,8 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
 # sortedBoids, steering -> boids, renderData
 @cuda.jit(fastmath=True)
 def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: DeviceNDArray, boidPositionTable: DeviceNDArray,
-        renderData: DeviceNDArray, timeStep: DeviceNDArray, WRAP_AROUND: bool, SPEED: np.float32) -> None:
+        renderData: DeviceNDArray, timeStep: DeviceNDArray, frameCounter: DeviceNDArray, wanderAngles: DeviceNDArray,
+        WRAP_AROUND: bool, SPEED: np.float32, JITTER: np.float32, WANDER: np.float32, WANDER_RATE: np.float32) -> None:
     slot = cuda.grid(1)
     if slot >= POPULATION:
         return
@@ -423,9 +436,13 @@ def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: Device
     # move the same way whatever the frame rate (the rules themselves are evaluated once per frame)
     remaining = timeStep[0]
     MARGIN = float32(200.0)
+    # Sub-step number, for the random numbers
+    subStep = 0
+    wanderAngle = wanderAngles[index]
     while remaining > float32(0.0):
         part = min(remaining, float32(1.0))
         remaining -= float32(1.0)
+        subStep += 1
         # If Edge Wrapping is off, avoid walls
         wallX, wallY = float32(0.0), float32(0.0)
         if not WRAP_AROUND:
@@ -449,9 +466,31 @@ def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: Device
                 wallY /= MARGIN
                 wallY = wallY ** 2
                 wallY = -wallY
+        sx = steerX + wallX / float32(10.0)
+        sy = steerY + wallY / float32(10.0)
+        # Wander (Reynolds): steer towards a target on a circle ahead of the agent, which drifts
+        # a little around the circle every frame (random walk, WANDER_RATE radians of standard
+        # deviation, sqrt(part) of it on part of a frame). The target moves with the agent's
+        # direction, so an agent keeps turning the same way for a while (course commitment)
+        if WANDER > float32(0.0):
+            wanderAngle += WANDER_RATE * math.sqrt(part) * randomGaussian(index, frameCounter[0], 3 * subStep)
+            if wanderAngle > float32(math.pi):
+                wanderAngle -= float32(2.0 * math.pi)
+            elif wanderAngle < float32(-math.pi):
+                wanderAngle += float32(2.0 * math.pi)
+            length = math.sqrt(dx**2 + dy**2)
+            if length > float32(0.0):
+                hx, hy = dx / length, dy / length
+                cosAngle, sinAngle = math.cos(wanderAngle), math.sin(wanderAngle)
+                tx = hx + WANDER_RADIUS * (hx * cosAngle - hy * sinAngle)
+                ty = hy + WANDER_RADIUS * (hx * sinAngle + hy * cosAngle)
+                tl = math.sqrt(tx**2 + ty**2)
+                # Desired direction (at full speed) minus current direction
+                sx += WANDER * (tx / tl - dx)
+                sy += WANDER * (ty / tl - dy)
         # Update directions
-        ndx = dx + (steerX + wallX / float32(10.0)) * float32(3.0) # Weight w, ratio of 1:w with old/new direction
-        ndy = dy + (steerY + wallY / float32(10.0)) * float32(3.0)
+        ndx = dx + sx * float32(3.0) # Weight w, ratio of 1:w with old/new direction
+        ndy = dy + sy * float32(3.0)
         # Clamp speed
         l = math.sqrt(ndx**2 + ndy**2)
         if l > float32(1.0):
@@ -460,6 +499,16 @@ def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: Device
         if part < float32(1.0):
             ndx = dx + (ndx - dx) * part
             ndy = dy + (ndy - dy) * part
+        # Jitter: a new random push every frame (Gaussian in x and y, weighted like the rules;
+        # sqrt(part) of it on part of a frame, so that the pushes add up the same way whatever the frame rate)
+        if JITTER > float32(0.0):
+            kick = float32(3.0) * JITTER * math.sqrt(part)
+            ndx += kick * randomGaussian(index, frameCounter[0], 3 * subStep + 1)
+            ndy += kick * randomGaussian(index, frameCounter[0], 3 * subStep + 2)
+            # Clamp speed
+            l = math.sqrt(ndx**2 + ndy**2)
+            if l > float32(1.0):
+                ndx, ndy = ndx / l, ndy / l
         dx, dy = ndx, ndy
         # Move position
         move = SPEED * part
@@ -476,6 +525,8 @@ def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: Device
                 y -= HEIGHT
             elif y < float32(0.0):
                 y += HEIGHT
+    if WANDER > float32(0.0):
+        wanderAngles[index] = wanderAngle
     # Render coordinates
     rx = (x - HALF_WIDTH) / HALF_WIDTH
     ry = (y - HALF_HEIGHT) / HALF_HEIGHT
@@ -540,3 +591,11 @@ def randomHash(a: int, b: int, c: int) -> int:
     h = (h * 0x846ca68b) & 0xFFFFFFFF
     h ^= h >> 16
     return h
+
+# Standard normal random number (Box-Muller transform of two uniform numbers from randomHash)
+@cuda.jit(device=True, fastmath=True)
+def randomGaussian(a: int, b: int, c: int) -> float:
+    seed = randomHash(a, b, c)
+    u1 = float32((randomHash(seed, 1, 0) >> 8) + 1) / float32(16777216.0) # (0, 1], so the log is finite
+    u2 = float32(randomHash(seed, 2, 0) >> 8) / float32(16777216.0)       # [0, 1)
+    return math.sqrt(float32(-2.0) * math.log(u1)) * math.cos(float32(2.0 * math.pi) * u2)

@@ -14,6 +14,12 @@ NEIGHBOR_DIST = 50
 SEPARATION_DIST = 0.4 # % of NEIGHBOR_DIST
 # How separation fades with distance: 0 same push at any distance, 1 linear, higher mostly at close range
 SEPARATION_FALLOFF = 1.0
+# Randomness, weighted like the rules. Jitter: a new random push every 1/60 s (Gaussian)
+JITTER = 0.0
+# Wander (Reynolds): steering towards a target drifting on a circle ahead of the boid, for smooth, committed turns.
+# WANDER_RATE: how fast the target drifts (standard deviation per 1/60 s, in degrees)
+WANDER = 0.0
+WANDER_RATE = 10.0
 WRAP_AROUND = False
 SPOTLIGHT = False
 FADING_TRAILS = True
@@ -50,7 +56,7 @@ def onKey(key: int) -> None:
         showGUI = not showGUI
 
 util.init(window, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
-    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET, SEPARATION_FALLOFF, BOID_INTENSITY), onKey)
+    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET, SEPARATION_FALLOFF, BOID_INTENSITY, JITTER, WANDER, WANDER_RATE), onKey)
 cp.init(util.parameters)
 ##############################################################################
 # Simulation loop

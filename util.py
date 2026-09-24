@@ -88,6 +88,9 @@ class Parameters:
     CANDIDATE_BUDGET: int = 2048
     SEPARATION_FALLOFF: float = 1.0
     BOID_INTENSITY: float = 2.0
+    JITTER: float = 0.0
+    WANDER: float = 0.0
+    WANDER_RATE: float = 10.0
 
 OVERLAY = np.array((
             -1.0,-1.0,
@@ -241,7 +244,7 @@ def renderGUI(frameTime: float) -> None:
     global parameters
     impl.process_inputs()
     imgui.new_frame()
-    imgui.set_next_window_size(imgui.ImVec2(600, 320))
+    imgui.set_next_window_size(imgui.ImVec2(600, 380))
     imgui.set_next_window_pos(imgui.ImVec2(0, 0))
     _ = imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize | imgui.WindowFlags_.no_background)
     _,parameters.COHESION = imgui.slider_float('COHESION', parameters.COHESION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
@@ -251,6 +254,9 @@ def renderGUI(frameTime: float) -> None:
     parameters.SEPARATION_DIST = separationPercent / 100
     _,parameters.SEPARATION_FALLOFF = imgui.slider_float('SEPARATION FALLOFF', parameters.SEPARATION_FALLOFF, 0.0, 4.0, '%.2f')
     _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f')
+    _,parameters.JITTER = imgui.slider_float('JITTER', parameters.JITTER, 0.0, 1.0, '%.3f', imgui.SliderFlags_.logarithmic)
+    _,parameters.WANDER = imgui.slider_float('WANDER', parameters.WANDER, 0.0, 1.0, '%.3f', imgui.SliderFlags_.logarithmic)
+    _,parameters.WANDER_RATE = imgui.slider_float('WANDER RATE', parameters.WANDER_RATE, 0.0, 60.0, '%.1f deg')
     _,parameters.BOID_INTENSITY = imgui.slider_float('BOID INTENSITY', parameters.BOID_INTENSITY, 0.1, 5.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.WRAP_AROUND = imgui.checkbox("WRAP AROUND", parameters.WRAP_AROUND)
     imgui.same_line(spacing=40)

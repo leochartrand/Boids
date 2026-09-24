@@ -36,6 +36,14 @@ An agent's neighbors are the flockmates within a certain radius around it. A sma
     <br>Figure 2 – Neighbor zone : neighbors (green), flockmates within the separation radius (red) and a flockmate in the blind spot (grey), which is ignored<br>
 </p>
 
+### Randomness
+Without randomness, the flock quickly settles into very orderly, parallel streams. Two kinds of random steering can be added in the GUI, weighted like the three rules:
+
+ - Jitter : a new random push every frame, independent of the previous ones (Gaussian, so small pushes are the most likely). Agents tremble or wobble along their path. Pushes against an agent's direction also slow it down a little.
+ - Wander : Craig Reynolds' *wander* steering behavior. Each agent steers towards a target on a small circle ahead of it, and the target drifts a little around the circle every frame. Since the circle is ahead, the target is never more than 30° off the agent's direction, and since it drifts slowly and moves with the agent, the agent keeps turning the same way for a while before changing its course. Agents follow smooth, meandering curves. The *wander rate* sets how fast the target drifts.
+
+Both are applied in steps of 1/60 s, so they behave the same way whatever the frame rate.
+
 ### Wrap-Around
 The simulation features a *wrap-around* mechanism, which consists of connecting the opposite edges of the grid in order to be able to loop infinitely through the simulated space. On a wrap-around grid, an agent reaching the right boundary would appear on the left side, and if it would reach the lower boundary, it would reappear at the top of the grid. The space of the simulation thus has a toroidal topology. This feature is optional but has some impact on the implementation, namely when it comes to calculating the distance between two agents.
 
