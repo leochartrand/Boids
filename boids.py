@@ -1,6 +1,8 @@
 import glfw
+
 import compute as cp
 import util
+
 ##############################################################################
 # Simulation parameters
 POPULATION = 1000000
@@ -38,7 +40,7 @@ glfw.make_context_current(window)
 glfw.swap_interval(1)
 
 showGUI = True
-def onKey(key):
+def onKey(key: int) -> None:
     global showGUI
     if key == glfw.KEY_ESCAPE:
         glfw.set_window_should_close(window, True)

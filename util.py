@@ -1,15 +1,53 @@
+from __future__ import annotations
+
+import ctypes
+import warnings
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from OpenGL.GL import *
-import numpy as np
+from typing import TYPE_CHECKING, Any
+
+import cuda.bindings.runtime as cudart
 import cupy as cp
-from cuda.bindings import runtime as cudart
-from OpenGL.GL.shaders import compileProgram, compileShader
-from numba.core.errors import NumbaPerformanceWarning
-import glfw # before imgui_bundle, so it uses this GLFW and not the one it bundles
+import glfw  # before imgui_bundle, so it uses this GLFW and not the one it bundles
+import numpy as np
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.glfw_backend import GlfwRenderer
-import warnings
+from numba.core.errors import NumbaPerformanceWarning
+from OpenGL.GL import (
+    GL_ARRAY_BUFFER,
+    GL_BLEND,
+    GL_COLOR_BUFFER_BIT,
+    GL_DYNAMIC_DRAW,
+    GL_FALSE,
+    GL_FLOAT,
+    GL_FRAGMENT_SHADER,
+    GL_ONE_MINUS_SRC_ALPHA,
+    GL_POINTS,
+    GL_SRC_ALPHA,
+    GL_STATIC_DRAW,
+    GL_TRIANGLES,
+    GL_VERTEX_SHADER,
+    glBindBuffer,
+    glBindVertexArray,
+    glBlendFunc,
+    glBufferData,
+    glClear,
+    glClearColor,
+    glDrawArrays,
+    glEnable,
+    glEnableVertexAttribArray,
+    glGenBuffers,
+    glGenVertexArrays,
+    glUseProgram,
+    glVertexAttribPointer,
+    glViewport,
+)
+from OpenGL.GL.shaders import compileProgram, compileShader
+
+if TYPE_CHECKING:
+    from glfw import _GLFWwindowPointerT as GlfwWindow
+
 warnings.simplefilter('ignore', category=NumbaPerformanceWarning)
 
 @dataclass
@@ -35,14 +73,14 @@ OVERLAY = np.array((
             -1.0,3.0), dtype=np.float32)
 
 # Raises on CUDA errors, returns the other values of a cuda-bindings call
-def checkCuda(result):
+def checkCuda(result: tuple[Any, ...]) -> list[Any]:
     err, *values = result
     if err != cudart.cudaError_t.cudaSuccess:
         raise RuntimeError(f"CUDA error: {err.name}")
     return values
 
 # onKey(key) is called for key presses that the GUI doesn't use
-def init(glfwWindow, params, onKey):
+def init(glfwWindow: GlfwWindow, params: Parameters, onKey: Callable[[int], None]) -> None:
     global window, shader, bgShader, impl, parameters, bgVao, bgVbo, boidVao, boidVbo, boidResource
     window = glfwWindow
     parameters = params
@@ -88,33 +126,33 @@ def init(glfwWindow, params, onKey):
         int(boidVbo), cudart.cudaGraphicsRegisterFlags.cudaGraphicsRegisterFlagsWriteDiscard))
 
     # GUI
-    imgui.create_context()
+    _ = imgui.create_context()
     impl = GlfwRenderer(window)
     # Replaces the renderer's key callback, so forward keys to it first
-    def keyCallback(window, key, scancode, action, mods):
+    def keyCallback(window: GlfwWindow, key: int, scancode: int, action: int, mods: int) -> None:
         impl.keyboard_callback(window, key, scancode, action, mods)
         if action == glfw.PRESS and not imgui.get_io().want_capture_keyboard:
             onKey(key)
-    glfw.set_key_callback(window, keyCallback)
+    _ = glfw.set_key_callback(window, keyCallback)
 
 # Maps the boid buffer for CUDA and yields it as a (POPULATION, 3) CuPy array.
 # Map/unmap run on the given stream, so work launched on it inside the block
 # finishes before OpenGL reads the buffer again
 @contextmanager
-def mappedBoidBuffer(stream):
-    checkCuda(cudart.cudaGraphicsMapResources(1, boidResource, stream.ptr))
+def mappedBoidBuffer(stream: cp.cuda.Stream) -> Generator[cp.ndarray, None, None]:
+    _ = checkCuda(cudart.cudaGraphicsMapResources(1, boidResource, stream.ptr))
     try:
         pointer, size = checkCuda(cudart.cudaGraphicsResourceGetMappedPointer(boidResource))
         memory = cp.cuda.UnownedMemory(pointer, size, boidResource)
         yield cp.ndarray((parameters.POPULATION, 3), dtype=cp.float32, memptr=cp.cuda.MemoryPointer(memory, 0))
     finally:
-        checkCuda(cudart.cudaGraphicsUnmapResources(1, boidResource, stream.ptr))
+        _ = checkCuda(cudart.cudaGraphicsUnmapResources(1, boidResource, stream.ptr))
 
-def shutdown():
-    checkCuda(cudart.cudaGraphicsUnregisterResource(boidResource))
+def shutdown() -> None:
+    _ = checkCuda(cudart.cudaGraphicsUnregisterResource(boidResource))
     impl.shutdown()
 
-def renderSim():
+def renderSim() -> None:
     glViewport(0, 0, *glfw.get_framebuffer_size(window))
     # Background render
     if parameters.FADING_TRAILS:
@@ -133,13 +171,13 @@ def renderSim():
     glBindVertexArray(0)
     glUseProgram(0)
 
-def renderGUI(frameTime):
+def renderGUI(frameTime: float) -> None:
     global parameters
     impl.process_inputs()
     imgui.new_frame()
-    imgui.set_next_window_size(imgui.ImVec2(600, 320))
+    imgui.set_next_window_size(imgui.ImVec2(600, 300))
     imgui.set_next_window_pos(imgui.ImVec2(0, 0))
-    imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize | imgui.WindowFlags_.no_background)
+    _ = imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize | imgui.WindowFlags_.no_background)
     _,parameters.COHESION = imgui.slider_float('COHESION', parameters.COHESION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.ALIGNMENT = imgui.slider_float('ALIGNMENT', parameters.ALIGNMENT, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.SEPARATION = imgui.slider_float('SEPARATION', parameters.SEPARATION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
@@ -147,7 +185,6 @@ def renderGUI(frameTime):
     parameters.SEPARATION_DIST = separationPercent / 100
     _,parameters.SEPARATION_FALLOFF = imgui.slider_float('SEPARATION FALLOFF', parameters.SEPARATION_FALLOFF, 0.0, 4.0, '%.2f')
     _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f')
-    _,parameters.CANDIDATE_BUDGET = imgui.slider_int('CANDIDATE BUDGET', parameters.CANDIDATE_BUDGET, 16, 16384, '%d', imgui.SliderFlags_.logarithmic)
     _,parameters.WRAP_AROUND = imgui.checkbox("WRAP AROUND", parameters.WRAP_AROUND)
     imgui.same_line(spacing=40)
     _,parameters.SPOTLIGHT = imgui.checkbox("SPOTLIGHT", parameters.SPOTLIGHT)

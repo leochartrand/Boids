@@ -1,19 +1,35 @@
-from numba import cuda, float32, int32
-import numpy as np
-import cupy as cp
-import random as rd
+from __future__ import annotations
+
 import math
+import random as rd
+from typing import TYPE_CHECKING, Any
+
+import cupy as cp
+import numpy as np
+from numba import cuda as numbaCuda
+from numba import float32, int32
+from numba.cuda.cudadrv.devicearray import DeviceNDArray
+from numba.cuda.dispatcher import CUDADispatcher
+
+if TYPE_CHECKING:
+    from util import Parameters
+
+# Numba's CUDA API is typed for its compiler, not for type checkers (kernel launches, cuda.grid,
+# shared arrays... show as errors), so type checkers treat it as untyped
+cuda: Any = numbaCuda
 
 # Threads per block of the neighbor search, and candidates loaded in shared memory at a time
 TILE_SIZE = 128
-# Blocks per cell: each takes every CELL_BLOCKS-th group of TILE_SIZE agents of the cell
-CELL_BLOCKS = 8
+# Blocks per cell: each takes every CELL_BLOCKS-th group of TILE_SIZE agents of the cell.
+# High, so that dense flocks (tens of thousands of agents in a cell) still spread over the whole GPU:
+# blocks of cells with fewer agents have nothing to do and return right away
+CELL_BLOCKS = 128
 # Movement (SPEED, turning) is set per frame at this frame rate, and scaled for longer or shorter frames
 REFERENCE_FPS = 60
 # Longest time step in seconds, so a pause (e.g. dragging the window) doesn't make agents jump
 MAX_TIME_STEP = 0.1
 
-def init(settings):
+def init(settings: Parameters) -> None:
     #Validation
     if not cuda.is_available():
         print("No CUDA device found.")
@@ -21,18 +37,15 @@ def init(settings):
     #######################################
     # Constants
     #######################################
-    global POPULATION, SPEED, WRAP_AROUND, SPOTLIGHT
-    global COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED
-    global WIDTH, HEIGHT, HALF_WIDTH, HALF_HEIGHT, SPEED, PARALLEL, GRID_CELL_SIZE, GRID_WIDTH, GRID_HEIGHT, GRID_SIZE
+    # (the settings that can change while running are read by updateParams)
+    global POPULATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, CANDIDATE_BUDGET
+    global WIDTH, HEIGHT, HALF_WIDTH, HALF_HEIGHT, GRID_CELL_SIZE, GRID_WIDTH, GRID_HEIGHT, GRID_SIZE
     POPULATION = settings.POPULATION
-    SPEED = settings.SPEED
-    COHESION = settings.COHESION
-    ALIGNMENT = settings.ALIGNMENT
-    SEPARATION = settings.SEPARATION
+    # Max agents tested per neighbor search (a random sample above it)
+    CANDIDATE_BUDGET = max(1, settings.CANDIDATE_BUDGET)
     # Constants used in kernel float math are float32, otherwise Numba promotes that math to float64
     NEIGHBOR_DIST = np.float32(settings.NEIGHBOR_DIST)
     NEIGHBOR_DIST_SQUARED = np.float32(settings.NEIGHBOR_DIST ** 2) # Useful for evaluating distances
-    SEPARATION_DIST_SQUARED = (settings.NEIGHBOR_DIST * settings.SEPARATION_DIST) ** 2
     WIDTH = np.float32(settings.WIDTH)
     HEIGHT = np.float32(settings.HEIGHT)
     HALF_WIDTH = np.float32(settings.WIDTH/2)
@@ -42,8 +55,6 @@ def init(settings):
     GRID_WIDTH = settings.WIDTH//settings.NEIGHBOR_DIST
     GRID_HEIGHT = settings.HEIGHT//settings.NEIGHBOR_DIST
     GRID_SIZE = GRID_WIDTH*GRID_HEIGHT
-    WRAP_AROUND = settings.WRAP_AROUND
-    SPOTLIGHT = settings.SPOTLIGHT
     #######################################
     # Arrays
     #######################################
@@ -51,8 +62,8 @@ def init(settings):
     # Boids - (x, y, dx, dy) for every agent, in agent order
     tempBoids = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
-        tempBoids[i,0] = rd.uniform(0, WIDTH)
-        tempBoids[i,1] = rd.uniform(0, HEIGHT)
+        tempBoids[i,0] = rd.uniform(0, settings.WIDTH)
+        tempBoids[i,1] = rd.uniform(0, settings.HEIGHT)
         tempBoids[i,2] = rd.random()*2-1
         tempBoids[i,3] = rd.random()*2-1
     boids = cp.asarray(tempBoids)
@@ -106,7 +117,7 @@ def init(settings):
     compileKernel(fillBoidPositionTable, "void(float32[:,::1], int32[:,::1], float32[:,::1])")
     compileKernel(fillCellIndexTable, "void(int32[:,::1], int32[::1], int32[::1])")
     compileKernel(neighborSearch, "void(float32[:,::1], float32[:,::1], int32[:,::1], int32[::1], int32[::1], int32[:,::1], float32[:,::1], int32[::1], "
-        "boolean, boolean, float32, float32, float32, float32, float32, int32)")
+        + "boolean, boolean, float32, float32, float32, float32, float32)")
     compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], boolean, float32)")
     #######################################
     # Stream and CUDA graph
@@ -123,8 +134,8 @@ def init(settings):
     # The arrays above were filled on the default stream
     cp.cuda.Device().synchronize()
 
-def compileKernel(kernel, signature):
-    kernel.compile(signature)
+def compileKernel(kernel: CUDADispatcher, signature: str) -> None:
+    _ = kernel.compile(signature)
     kernel.disable_compile()
 
 #######################################
@@ -133,12 +144,12 @@ def compileKernel(kernel, signature):
 
 # renderData - (x, y, color) for every agent, the mapped OpenGL vertex buffer
 # dt - time since the last update, in seconds
-def update(params, renderData, dt):
+def update(params: Parameters, renderData: cp.ndarray, dt: float) -> None:
     global graph, graphKey
     updateParams(params)
     # Kernel arguments and array addresses are recorded in the graph,
     # so it is recorded again when a parameter or the buffer address changes
-    key = (SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF, WRAP_AROUND, SPOTLIGHT, CANDIDATE_BUDGET, renderData.data.ptr)
+    key = (speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight, renderData.data.ptr)
     if key != graphKey:
         nbRenderData = cuda.as_cuda_array(renderData, sync=False)
         with stream, cp.cuda.using_allocator(graphPool.malloc):
@@ -150,10 +161,11 @@ def update(params, renderData, dt):
         graphKey = key
     with stream:
         timeStep.fill(min(dt, MAX_TIME_STEP) * REFERENCE_FPS)
+    assert graph is not None # recorded above on the first update
     graph.launch(stream)
 
 # Launches one simulation step on the stream (recorded into the graph, not executed)
-def recordFrame(renderData):
+def recordFrame(renderData: DeviceNDArray) -> None:
     # 512 threads per block, as many blocks as we need
     nthreads = 512
     nblocks = (POPULATION + (nthreads - 1)) // nthreads
@@ -170,25 +182,22 @@ def recordFrame(renderData):
     fillCellIndexTable[nblocks, nthreads, nbStream](nbBoidPositionTable, nbCellIndexTable, nbCellEndTable)
     # CELL_BLOCKS blocks per cell
     neighborSearch[(GRID_SIZE, CELL_BLOCKS), TILE_SIZE, nbStream](nbSortedBoids, nbSteering, lookUpTable, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, renderData,
-        nbFrameCounter, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF, CANDIDATE_BUDGET)
+        nbFrameCounter, spotlight, wrapAround, cohesion, alignment, separation, separationDistSquared, separationFalloff)
     # Update positions and write to render buffer
-    writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, WRAP_AROUND, SPEED)
+    writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, wrapAround, speed)
 
-# Update parameters with GUI input
-def updateParams(params):
-    global POPULATION, SPEED, WRAP_AROUND, SPOTLIGHT, CANDIDATE_BUDGET
-    global COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF
-    POPULATION = params.POPULATION
+# Update parameters with GUI input (settings that can change while running)
+def updateParams(params: Parameters) -> None:
+    global speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight
     # Kernel arguments are float32, Python floats would arrive as float64
-    SPEED = np.float32(params.SPEED)
-    COHESION = np.float32(params.COHESION)
-    ALIGNMENT = np.float32(params.ALIGNMENT)
-    SEPARATION = np.float32(params.SEPARATION)
-    SEPARATION_DIST_SQUARED = np.float32((params.NEIGHBOR_DIST * params.SEPARATION_DIST) ** 2)
-    SEPARATION_FALLOFF = np.float32(params.SEPARATION_FALLOFF)
-    WRAP_AROUND = params.WRAP_AROUND
-    SPOTLIGHT = params.SPOTLIGHT
-    CANDIDATE_BUDGET = np.int32(max(1, params.CANDIDATE_BUDGET))
+    speed = np.float32(params.SPEED)
+    cohesion = np.float32(params.COHESION)
+    alignment = np.float32(params.ALIGNMENT)
+    separation = np.float32(params.SEPARATION)
+    separationDistSquared = np.float32((params.NEIGHBOR_DIST * params.SEPARATION_DIST) ** 2)
+    separationFalloff = np.float32(params.SEPARATION_FALLOFF)
+    wrapAround = params.WRAP_AROUND
+    spotlight = params.SPOTLIGHT
 
 
 #######################################
@@ -197,7 +206,7 @@ def updateParams(params):
 
 # Update Boid Table with new cell for every agent
 @cuda.jit(fastmath=True)
-def fillBoidPositionTable(boids, boidPositionTable, renderData):
+def fillBoidPositionTable(boids: DeviceNDArray, boidPositionTable: DeviceNDArray, renderData: DeviceNDArray) -> None:
     index = cuda.grid(1)
     if index >= POPULATION:
         return
@@ -211,7 +220,7 @@ def fillBoidPositionTable(boids, boidPositionTable, renderData):
 
 # Update Index Tables to give start and end (exclusive) index for every cell on boidPositionTable
 @cuda.jit(fastmath=True)
-def fillCellIndexTable(boidPositionTable, cellIndexTable, cellEndTable):
+def fillCellIndexTable(boidPositionTable: DeviceNDArray, cellIndexTable: DeviceNDArray, cellEndTable: DeviceNDArray) -> None:
     index = cuda.grid(1)
     if index >= POPULATION:
         return
@@ -233,7 +242,10 @@ def fillCellIndexTable(boidPositionTable, cellIndexTable, cellEndTable):
 # tested whatever its cell or position, so the sample isn't biased in any direction
 # sortedBoids -> steering
 @cuda.jit(fastmath=True)
-def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, renderData, frameCounter, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF, CANDIDATE_BUDGET):
+def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTable: DeviceNDArray, cellIndexTable: DeviceNDArray,
+        cellEndTable: DeviceNDArray, boidPositionTable: DeviceNDArray, renderData: DeviceNDArray, frameCounter: DeviceNDArray,
+        SPOTLIGHT: bool, WRAP_AROUND: bool, COHESION: np.float32, ALIGNMENT: np.float32, SEPARATION: np.float32,
+        SEPARATION_DIST_SQUARED: np.float32, SEPARATION_FALLOFF: np.float32) -> None:
     cell = cuda.blockIdx.x
     thread = cuda.threadIdx.x
     cellStart, cellEnd = cellIndexTable[cell], cellEndTable[cell]
@@ -395,7 +407,8 @@ def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTa
 # Gets final direction and position and writes to memory (back in agent order)
 # sortedBoids, steering -> boids, renderData
 @cuda.jit(fastmath=True)
-def writeData(boids, sortedBoids, steering, boidPositionTable, renderData, timeStep, WRAP_AROUND, SPEED):
+def writeData(boids: DeviceNDArray, sortedBoids: DeviceNDArray, steering: DeviceNDArray, boidPositionTable: DeviceNDArray,
+        renderData: DeviceNDArray, timeStep: DeviceNDArray, WRAP_AROUND: bool, SPEED: np.float32) -> None:
     slot = cuda.grid(1)
     if slot >= POPULATION:
         return
@@ -482,7 +495,7 @@ def writeData(boids, sortedBoids, steering, boidPositionTable, renderData, timeS
 # Looks for minimal toroidal distance and returns perceived position
 # Given what is provided by Numba we have to get the minimum manually
 @cuda.jit(device=True, fastmath=True)
-def minimalToroidalDistance(x,y,ax,ay):
+def minimalToroidalDistance(x: np.float32, y: np.float32, ax: np.float32, ay: np.float32) -> tuple[np.float32, np.float32]:
     # X axis
     ax1 = ax - WIDTH
     ax2 = ax + WIDTH
@@ -513,13 +526,13 @@ def minimalToroidalDistance(x,y,ax,ay):
 # the vector from the other agent) < 0.8. Without sqrt or division: when the dot product is
 # negative the cosine is too, otherwise both sides can be squared
 @cuda.jit(device=True, fastmath=True)
-def isInFOV(dx,dy,distX,distY,directionSquared,distLengthSquared):
+def isInFOV(dx: np.float32, dy: np.float32, distX: np.float32, distY: np.float32, directionSquared: np.float32, distLengthSquared: np.float32) -> np.bool_:
     dot = dx * distX + dy * distY
     return dot < float32(0.0) or dot**2 < float32(0.64) * directionSquared * distLengthSquared
 
 # Integer hash ("lowbias32"), gives a well mixed non-negative number from three integers
 @cuda.jit(device=True)
-def randomHash(a, b, c):
+def randomHash(a: int, b: int, c: int) -> int:
     h = (a * 73856093 + b * 19349663 + c * 83492791) & 0xFFFFFFFF
     h ^= h >> 16
     h = (h * 0x7feb352d) & 0xFFFFFFFF
