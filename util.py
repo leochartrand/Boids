@@ -27,6 +27,7 @@ class Parameters:
     SPOTLIGHT       : bool
     FADING_TRAILS   : bool
     CANDIDATE_BUDGET: int = 2048
+    SEPARATION_FALLOFF: float = 1.0
 
 OVERLAY = np.array((
             -1.0,-1.0,
@@ -136,7 +137,7 @@ def renderGUI(frameTime):
     global parameters
     impl.process_inputs()
     imgui.new_frame()
-    imgui.set_next_window_size(imgui.ImVec2(600, 300))
+    imgui.set_next_window_size(imgui.ImVec2(600, 320))
     imgui.set_next_window_pos(imgui.ImVec2(0, 0))
     imgui.begin("Custom window", flags=imgui.WindowFlags_.no_title_bar | imgui.WindowFlags_.no_resize | imgui.WindowFlags_.no_background)
     _,parameters.COHESION = imgui.slider_float('COHESION', parameters.COHESION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
@@ -144,6 +145,7 @@ def renderGUI(frameTime):
     _,parameters.SEPARATION = imgui.slider_float('SEPARATION', parameters.SEPARATION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,separationPercent = imgui.slider_int('NEIGHBOR/SEPARATION RATIO', round(parameters.SEPARATION_DIST*100), 0, 100, '%d%%')
     parameters.SEPARATION_DIST = separationPercent / 100
+    _,parameters.SEPARATION_FALLOFF = imgui.slider_float('SEPARATION FALLOFF', parameters.SEPARATION_FALLOFF, 0.0, 4.0, '%.2f')
     _,parameters.SPEED = imgui.slider_float('SPEED', parameters.SPEED, 0.0, 10.0, '%.2f')
     _,parameters.CANDIDATE_BUDGET = imgui.slider_int('CANDIDATE BUDGET', parameters.CANDIDATE_BUDGET, 16, 16384, '%d', imgui.SliderFlags_.logarithmic)
     _,parameters.WRAP_AROUND = imgui.checkbox("WRAP AROUND", parameters.WRAP_AROUND)

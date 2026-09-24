@@ -29,7 +29,7 @@ The rules can be tuned live with the sliders of the GUI. Press SPACE to hide the
 # Design
 
 ### Neighbor zone
-An agent's neighbors are the flockmates within a certain radius around it. A smaller radius, set as a percentage of the neighbor radius, defines the "personal bubble" used by the separation rule. Agents also have a blind spot: flockmates directly behind them are not considered, even if they are within the radius. The blind spot is a cone of about 37° on each side of the agent's back, so each agent perceives about 286° around itself.
+An agent's neighbors are the flockmates within a certain radius around it. A smaller radius, set as a percentage of the neighbor radius, defines the "personal bubble" used by the separation rule. Each flockmate inside that bubble pushes the agent away, harder the closer it is: the push fades from full strength at contact to nothing at the edge of the bubble, and how quickly it fades can be tuned in the GUI (from the same push at any distance to a push felt only at very close range). Agents also have a blind spot: flockmates directly behind them are not considered, even if they are within the radius. The blind spot is a cone of about 37° on each side of the agent's back, so each agent perceives about 286° around itself.
 
 <p align="center" width="100%">
     <img width="100%" src="./img/angle.png">

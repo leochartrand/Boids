@@ -10,6 +10,8 @@ ALIGNMENT = 0.2
 SEPARATION = 0.1
 NEIGHBOR_DIST = 50
 SEPARATION_DIST = 0.4 # % of NEIGHBOR_DIST
+# How separation fades with distance: 0 same push at any distance, 1 linear, higher mostly at close range
+SEPARATION_FALLOFF = 1.0
 WRAP_AROUND = False
 SPOTLIGHT = False
 FADING_TRAILS = True
@@ -44,7 +46,7 @@ def onKey(key):
         showGUI = not showGUI
 
 util.init(window, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
-    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET), onKey)
+    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET, SEPARATION_FALLOFF), onKey)
 cp.init(util.parameters)
 ##############################################################################
 # Simulation loop

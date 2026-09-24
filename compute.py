@@ -106,7 +106,7 @@ def init(settings):
     compileKernel(fillBoidPositionTable, "void(float32[:,::1], int32[:,::1], float32[:,::1])")
     compileKernel(fillCellIndexTable, "void(int32[:,::1], int32[::1], int32[::1])")
     compileKernel(neighborSearch, "void(float32[:,::1], float32[:,::1], int32[:,::1], int32[::1], int32[::1], int32[:,::1], float32[:,::1], int32[::1], "
-        "boolean, boolean, float32, float32, float32, float32, int32)")
+        "boolean, boolean, float32, float32, float32, float32, float32, int32)")
     compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], boolean, float32)")
     #######################################
     # Stream and CUDA graph
@@ -138,7 +138,7 @@ def update(params, renderData, dt):
     updateParams(params)
     # Kernel arguments and array addresses are recorded in the graph,
     # so it is recorded again when a parameter or the buffer address changes
-    key = (SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, WRAP_AROUND, SPOTLIGHT, CANDIDATE_BUDGET, renderData.data.ptr)
+    key = (SPEED, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF, WRAP_AROUND, SPOTLIGHT, CANDIDATE_BUDGET, renderData.data.ptr)
     if key != graphKey:
         nbRenderData = cuda.as_cuda_array(renderData, sync=False)
         with stream, cp.cuda.using_allocator(graphPool.malloc):
@@ -170,14 +170,14 @@ def recordFrame(renderData):
     fillCellIndexTable[nblocks, nthreads, nbStream](nbBoidPositionTable, nbCellIndexTable, nbCellEndTable)
     # CELL_BLOCKS blocks per cell
     neighborSearch[(GRID_SIZE, CELL_BLOCKS), TILE_SIZE, nbStream](nbSortedBoids, nbSteering, lookUpTable, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, renderData,
-        nbFrameCounter, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, CANDIDATE_BUDGET)
+        nbFrameCounter, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF, CANDIDATE_BUDGET)
     # Update positions and write to render buffer
     writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, WRAP_AROUND, SPEED)
 
 # Update parameters with GUI input
 def updateParams(params):
     global POPULATION, SPEED, WRAP_AROUND, SPOTLIGHT, CANDIDATE_BUDGET
-    global COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED
+    global COHESION, ALIGNMENT, SEPARATION, NEIGHBOR_DIST, NEIGHBOR_DIST_SQUARED, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF
     POPULATION = params.POPULATION
     # Kernel arguments are float32, Python floats would arrive as float64
     SPEED = np.float32(params.SPEED)
@@ -185,6 +185,7 @@ def updateParams(params):
     ALIGNMENT = np.float32(params.ALIGNMENT)
     SEPARATION = np.float32(params.SEPARATION)
     SEPARATION_DIST_SQUARED = np.float32((params.NEIGHBOR_DIST * params.SEPARATION_DIST) ** 2)
+    SEPARATION_FALLOFF = np.float32(params.SEPARATION_FALLOFF)
     WRAP_AROUND = params.WRAP_AROUND
     SPOTLIGHT = params.SPOTLIGHT
     CANDIDATE_BUDGET = np.int32(max(1, params.CANDIDATE_BUDGET))
@@ -232,7 +233,7 @@ def fillCellIndexTable(boidPositionTable, cellIndexTable, cellEndTable):
 # tested whatever its cell or position, so the sample isn't biased in any direction
 # sortedBoids -> steering
 @cuda.jit(fastmath=True)
-def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, renderData, frameCounter, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, CANDIDATE_BUDGET):
+def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, renderData, frameCounter, SPOTLIGHT, WRAP_AROUND, COHESION, ALIGNMENT, SEPARATION, SEPARATION_DIST_SQUARED, SEPARATION_FALLOFF, CANDIDATE_BUDGET):
     cell = cuda.blockIdx.x
     thread = cuda.threadIdx.x
     cellStart, cellEnd = cellIndexTable[cell], cellEndTable[cell]
@@ -277,6 +278,8 @@ def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTa
             dx, dy = sortedBoids[slot,2], sortedBoids[slot,3]
         # Squared length of the direction, for the field of view test
         directionSquared = dx**2 + dy**2
+        # Separation radius
+        separationDist = math.sqrt(SEPARATION_DIST_SQUARED)
         # Boid direction
         resX, resY = float32(0.0), float32(0.0)
         numNeighbors = 0
@@ -338,10 +341,14 @@ def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTa
                             cohesionX += ax
                             cohesionY += ay
                             if isTooClose:
-                                # distX /= distLengthSquared
-                                # distY /= distLengthSquared
-                                separationX += distX
-                                separationY += distY
+                                # Push away from the other agent, stronger the closer it is: 1 when touching,
+                                # fading to 0 at the separation radius. SEPARATION_FALLOFF sets how fast
+                                # (0: same push at any distance, 1: linear, higher: mostly at close range)
+                                # (distLengthSquared > 0 here, as agents at the same position aren't neighbors)
+                                dist = math.sqrt(distLengthSquared)
+                                push = math.pow(float32(1.0) - dist / separationDist, SEPARATION_FALLOFF) / dist # / dist: (distX, distY) to unit length
+                                separationX += distX * push
+                                separationY += distY * push
                                 numSeparation += 1
             # The tile is overwritten next
             cuda.syncthreads()
@@ -368,9 +375,14 @@ def neighborSearch(sortedBoids, steering, lookUpTable, cellIndexTable, cellEndTa
             resY += cohesionY * COHESION
             # Separation
             if numSeparation > 0:
-                # Normalize separation vector
+                # The pushes add up, so closer and more crowded agents push harder, up to a length
+                # of 1 (like the other rules): larger pushes made agents flip back and forth.
+                # When only one candidate out of stride was tested, the sum is scaled back up first
+                separationX *= float32(stride)
+                separationY *= float32(stride)
                 l = math.sqrt(separationX**2 + separationY**2)
-                separationX, separationY = separationX / l, separationY / l
+                if l > float32(1.0):
+                    separationX, separationY = separationX / l, separationY / l
                 # Add separation vector to direction
                 resX += separationX * SEPARATION
                 resY += separationY * SEPARATION
