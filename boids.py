@@ -20,19 +20,27 @@ JITTER = 0.0
 # WANDER_RATE: how fast the target drifts (standard deviation per 1/60 s, in degrees)
 WANDER = 0.0
 WANDER_RATE = 10.0
-# Cursor: hold left click to attract boids (or repel them, with CURSOR_REPEL), right click for the opposite.
+# Cursor: hold left click to repel boids, right click to attract them.
 # CURSOR_ATTENTION: share of a boid's attention the cursor takes (0 to 1), next to it and fading to 0 at CURSOR_RADIUS pixels
 CURSOR_ATTENTION = 0.5
 CURSOR_RADIUS = 400.0
-CURSOR_REPEL = False
+# Species: share of boids in species 2 (0 to 1, 0: a single species). How each species reacts to the other:
+# 1 attraction (flocks with it), 0 neutral (only separation), -1 repulsion (avoids it within the neighbor radius,
+# with REPULSION as weight). E.g. predator/prey: INTERACTION_12 = 1, INTERACTION_21 = -1
+SPECIES_2_SHARE = 0.5
+INTERACTION_12 = 0
+INTERACTION_21 = 0
+REPULSION = 0.3
 WRAP_AROUND = False
 SPOTLIGHT = False
+# Boids don't see what's directly behind them (about 37 degrees on each side of their back)
+BLIND_SPOT = True
 FADING_TRAILS = True
 # Light a boid adds to its pixel (like an exposure): lower looks finer, and dense flocks show brighter
 BOID_INTENSITY = 2.0
 # Max agents tested per neighbor search. Above it, a random sample is tested:
 # much faster in dense clumps, but separation gets noisier and weaker there
-CANDIDATE_BUDGET = 2048
+CANDIDATE_BUDGET = 1024
 # Full screen on the largest monitor, or a window of WIDTH x HEIGHT
 FULLSCREEN = False
 # Window size
@@ -73,7 +81,8 @@ def onKey(key: int) -> None:
         showGUI = not showGUI
 
 util.init(window, util.Parameters(POPULATION, SPEED, COHESION, ALIGNMENT, SEPARATION,
-    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET, SEPARATION_FALLOFF, BOID_INTENSITY, JITTER, WANDER, WANDER_RATE, CURSOR_ATTENTION, CURSOR_RADIUS, CURSOR_REPEL), onKey)
+    NEIGHBOR_DIST, SEPARATION_DIST, WIDTH, HEIGHT, WRAP_AROUND, SPOTLIGHT, FADING_TRAILS, CANDIDATE_BUDGET, SEPARATION_FALLOFF, BOID_INTENSITY, JITTER, WANDER, WANDER_RATE, CURSOR_ATTENTION, CURSOR_RADIUS,
+    SPECIES_2_SHARE, INTERACTION_12, INTERACTION_21, REPULSION, BLIND_SPOT), onKey)
 cp.init(util.parameters)
 ##############################################################################
 # Simulation loop

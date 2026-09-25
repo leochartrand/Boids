@@ -93,7 +93,11 @@ class Parameters:
     WANDER_RATE: float = 10.0
     CURSOR_ATTENTION: float = 0.5
     CURSOR_RADIUS: float = 400.0
-    CURSOR_REPEL: bool = False
+    SPECIES_2_SHARE: float = 0.0
+    INTERACTION_12: int = 0
+    INTERACTION_21: int = 0
+    REPULSION: float = 0.3
+    BLIND_SPOT: bool = True
 
 OVERLAY = np.array((
             -1.0,-1.0,
@@ -243,17 +247,15 @@ def renderSim() -> None:
     glBindVertexArray(0)
     glUseProgram(0)
 
-# Cursor position in the simulated space and mode: 1 attracts, -1 repels, 0 off.
-# The left button does what the ATTRACT/REPEL switch says, the right button the opposite;
-# off when no button is held or when the GUI uses the mouse
+# Cursor position in the simulated space and mode: -1 repels (left button held), 1 attracts
+# (right button), 0 off (no button, or the GUI uses the mouse)
 def cursorInput() -> tuple[float, float, float]:
     mode = 0.0
     if not imgui.get_io().want_capture_mouse:
-        selected = -1.0 if parameters.CURSOR_REPEL else 1.0
         if glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS:
-            mode = selected
+            mode = -1.0
         elif glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS:
-            mode = -selected
+            mode = 1.0
     x, y = glfw.get_cursor_pos(window)
     width, height = glfw.get_window_size(window)
     # Window y goes down, the simulated space's y goes up
@@ -282,22 +284,27 @@ def renderGUI(frameTime: float) -> None:
     _,attentionPercent = imgui.slider_float('CURSOR ATTENTION', parameters.CURSOR_ATTENTION * 100, 0.0, 100.0, '%.0f%%')
     parameters.CURSOR_ATTENTION = attentionPercent / 100
     _,parameters.CURSOR_RADIUS = imgui.slider_float('CURSOR RADIUS', parameters.CURSOR_RADIUS, 50.0, 2000.0, '%.0f px', imgui.SliderFlags_.logarithmic)
+    _,sharePercent = imgui.slider_float('SPECIES 2 SHARE', parameters.SPECIES_2_SHARE * 100, 0.0, 100.0, '%.0f%%')
+    parameters.SPECIES_2_SHARE = sharePercent / 100
+    _,parameters.REPULSION = imgui.slider_float('REPULSION', parameters.REPULSION, 0.0, 100.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.BOID_INTENSITY = imgui.slider_float('BOID INTENSITY', parameters.BOID_INTENSITY, 0.1, 5.0, '%.2f', imgui.SliderFlags_.logarithmic)
     _,parameters.WRAP_AROUND = imgui.checkbox("WRAP AROUND", parameters.WRAP_AROUND)
     imgui.same_line(spacing=40)
     _,parameters.SPOTLIGHT = imgui.checkbox("SPOTLIGHT", parameters.SPOTLIGHT)
     imgui.same_line(spacing=45)
     _,parameters.FADING_TRAILS = imgui.checkbox("FADING_TRAILS", parameters.FADING_TRAILS)
-    imgui.text("CURSOR:")
-    imgui.same_line()
-    if imgui.radio_button("ATTRACT", not parameters.CURSOR_REPEL):
-        parameters.CURSOR_REPEL = False
-    imgui.same_line()
-    if imgui.radio_button("REPEL", parameters.CURSOR_REPEL):
-        parameters.CURSOR_REPEL = True
+    _,parameters.BLIND_SPOT = imgui.checkbox("BLIND SPOT", parameters.BLIND_SPOT)
+    # How each species reacts to the other one
+    for label, name in (("1 -> 2", "INTERACTION_12"), ("2 -> 1", "INTERACTION_21")):
+        imgui.text(f"SPECIES {label}:")
+        value = getattr(parameters, name)
+        for text, option in (("ATTRACT", 1), ("NEUTRAL", 0), ("REPEL", -1)):
+            imgui.same_line()
+            _, value = imgui.radio_button(f"{text}##{name}", value, option)
+        setattr(parameters, name, value)
     imgui.text(f"ms/frame: {frameTime:.1f}")
     imgui.push_style_var(imgui.StyleVar_.alpha, 0.2)
-    imgui.text("(Hold left click to use the cursor, right click for the opposite, SPACE to hide)")
+    imgui.text("(Hold left click to repel boids, right click to attract them, SPACE to hide)")
     imgui.pop_style_var(1)
     imgui.end()
     imgui.pop_style_color()

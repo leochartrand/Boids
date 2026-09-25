@@ -32,7 +32,12 @@ void main()
     {
         outColor = vec4(0.9,1.0,0.8,spotlightIntensity);
     }
-    // Normal boid color
+    // Species 2
+    else if (data.z == 5.0)
+    {
+        outColor = vec4(1.0,0.6,0.3,boidIntensity);
+    }
+    // Normal boid color (species 1)
     else // (data.z == 0.0)
     {
         outColor = vec4(0.6,0.9,1.0,boidIntensity);

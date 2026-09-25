@@ -31,6 +31,10 @@ MAX_TIME_STEP = 0.1
 # Wander (Reynolds): radius of the circle the wander target moves on, ahead of the agent at a distance of 1.
 # The target is then at most 30 degrees off the agent's direction
 WANDER_RADIUS = np.float32(0.5)
+# Features compiled into neighborSearch: it's compiled once for each combination (see compileNeighborSearch),
+# and the unused code is left out, as every check in its innermost loop costs time
+compiledWithSpecies = False
+compiledWithBlindSpot = True
 
 def init(settings: Parameters) -> None:
     #Validation
@@ -61,7 +65,7 @@ def init(settings: Parameters) -> None:
     #######################################
     # Arrays
     #######################################
-    global boids, sortedBoids, steering, frameCounter, timeStep, cursor, wanderAngles, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
+    global boids, sortedBoids, speciesValues, sortedSpeciesValues, steering, frameCounter, timeStep, cursor, wanderAngles, lookUpTable, cellIndexTable, cellEndTable, boidPositionTable, unsortedBoidPositionTable
     # Boids - (x, y, dx, dy) for every agent, in agent order
     tempBoids = np.zeros((POPULATION, 4), dtype=np.float32)
     for i in range(POPULATION):
@@ -73,6 +77,10 @@ def init(settings: Parameters) -> None:
     # Sorted Boids - copy of Boids in cell order, rebuilt every frame so that
     # agents of the same cell are contiguous in memory for the neighbor search
     sortedBoids = cp.empty_like(boids)
+    # Species Values - a fixed random number per agent (in agent order): an agent belongs to species 2
+    # when it's below the species 2 share, so the share can change while running. Sorted like sortedBoids
+    speciesValues = cp.asarray(np.array([rd.random() for _ in range(POPULATION)], dtype=np.float32))
+    sortedSpeciesValues = cp.empty_like(speciesValues)
     # Steering - (x, y) direction given by the three rules for every agent, indexed by sorted slot
     steering = cp.zeros((POPULATION, 2), dtype=cp.float32)
     # Frame counter, seeds the random sampling of candidates (kernel arguments are fixed in the graph)
@@ -106,9 +114,11 @@ def init(settings: Parameters) -> None:
                 col += 1
     lookUpTable = cuda.to_device(tempLookUpTable)
     # Numba views of the CuPy arrays, made once: converting CuPy arrays on every launch is slow
-    global nbBoids, nbSortedBoids, nbSteering, nbFrameCounter, nbTimeStep, nbCursor, nbWanderAngles, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
+    global nbBoids, nbSortedBoids, nbSpeciesValues, nbSortedSpeciesValues, nbSteering, nbFrameCounter, nbTimeStep, nbCursor, nbWanderAngles, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, nbUnsortedBoidPositionTable
     nbBoids = cuda.as_cuda_array(boids)
     nbSortedBoids = cuda.as_cuda_array(sortedBoids)
+    nbSpeciesValues = cuda.as_cuda_array(speciesValues)
+    nbSortedSpeciesValues = cuda.as_cuda_array(sortedSpeciesValues)
     nbSteering = cuda.as_cuda_array(steering)
     nbFrameCounter = cuda.as_cuda_array(frameCounter)
     nbTimeStep = cuda.as_cuda_array(timeStep)
@@ -123,10 +133,10 @@ def init(settings: Parameters) -> None:
     #######################################
     # Compiled here, as they read the constants above. Fixed signatures: other scalar types are
     # converted to these, arrays of other types raise, and no slower (e.g. float64) version is compiled
-    compileKernel(fillBoidPositionTable, "void(float32[:,::1], int32[:,::1], float32[:,::1])")
+    compileKernel(fillBoidPositionTable, "void(float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], float32)")
     compileKernel(fillCellIndexTable, "void(int32[:,::1], int32[::1], int32[::1])")
-    compileKernel(neighborSearch, "void(float32[:,::1], float32[:,::1], int32[:,::1], int32[::1], int32[::1], int32[:,::1], float32[:,::1], int32[::1], "
-        + "boolean, boolean, float32, float32, float32, float32, float32)")
+    global neighborSearchKernels
+    neighborSearchKernels = {(species, blindSpot): compileNeighborSearch(species, blindSpot) for species in (False, True) for blindSpot in (False, True)}
     compileKernel(writeData, "void(float32[:,::1], float32[:,::1], float32[:,::1], int32[:,::1], float32[:,::1], float32[::1], int32[::1], float32[::1], "
         + "float32[::1], boolean, float32, float32, float32, float32, float32, float32)")
     #######################################
@@ -148,6 +158,15 @@ def compileKernel(kernel: CUDADispatcher, signature: str) -> None:
     _ = kernel.compile(signature)
     kernel.disable_compile()
 
+# A version of neighborSearch with or without species and the blind spot (compile-time constants)
+def compileNeighborSearch(species: bool, blindSpot: bool) -> CUDADispatcher:
+    global compiledWithSpecies, compiledWithBlindSpot
+    compiledWithSpecies, compiledWithBlindSpot = species, blindSpot
+    kernel = cuda.jit(fastmath=True)(neighborSearch)
+    compileKernel(kernel, "void(float32[:,::1], float32[:,::1], int32[:,::1], int32[::1], int32[::1], int32[:,::1], float32[:,::1], int32[::1], "
+        + "float32[::1], boolean, boolean, float32, float32, float32, float32, float32, float32, int32, int32, float32)")
+    return kernel
+
 #######################################
 # Update
 #######################################
@@ -160,7 +179,8 @@ def update(params: Parameters, renderData: cp.ndarray, dt: float, cursorInput: t
     updateParams(params)
     # Kernel arguments and array addresses are recorded in the graph,
     # so it is recorded again when a parameter or the buffer address changes
-    key = (speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight, jitter, wander, wanderRate, cursorAttention, cursorRadius, renderData.data.ptr)
+    key = (speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight, jitter, wander, wanderRate, cursorAttention, cursorRadius,
+        speciesShare, interaction12, interaction21, repulsion, blindSpot, renderData.data.ptr)
     if key != graphKey:
         nbRenderData = cuda.as_cuda_array(renderData, sync=False)
         with stream, cp.cuda.using_allocator(graphPool.malloc):
@@ -182,19 +202,23 @@ def recordFrame(renderData: DeviceNDArray) -> None:
     nthreads = 512
     nblocks = (POPULATION + (nthreads - 1)) // nthreads
     cp.add(frameCounter, 1, out=frameCounter)
-    fillBoidPositionTable[nblocks, nthreads, nbStream](nbBoids, nbUnsortedBoidPositionTable, renderData)
-    # CuPy sort, a bit faster than on CPU
+    fillBoidPositionTable[nblocks, nthreads, nbStream](nbBoids, nbUnsortedBoidPositionTable, renderData, nbSpeciesValues, speciesShare)
+    # CuPy sort, a bit faster than on CPU (by cell, then species)
     order = cp.argsort(unsortedBoidPositionTable[:,1])
     cp.take(unsortedBoidPositionTable, order, axis=0, out=boidPositionTable)
     # Reorder agent data to match the sorted table
     cp.take(boids, order, axis=0, out=sortedBoids)
+    cp.take(speciesValues, order, out=sortedSpeciesValues)
     # New index tables according to data from sorted boid table (empty cells stay at start = end = 0)
     cellIndexTable.fill(0)
     cellEndTable.fill(0)
     fillCellIndexTable[nblocks, nthreads, nbStream](nbBoidPositionTable, nbCellIndexTable, nbCellEndTable)
     # CELL_BLOCKS blocks per cell
-    neighborSearch[(GRID_SIZE, CELL_BLOCKS), TILE_SIZE, nbStream](nbSortedBoids, nbSteering, lookUpTable, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, renderData,
-        nbFrameCounter, spotlight, wrapAround, cohesion, alignment, separation, separationDistSquared, separationFalloff)
+    # Species only matter when there are some, and unless both attract each other (then they flock as one)
+    species = bool(speciesShare > 0) and not (interaction12 == 1 and interaction21 == 1)
+    neighborSearchKernels[(species, blindSpot)][(GRID_SIZE, CELL_BLOCKS), TILE_SIZE, nbStream](nbSortedBoids, nbSteering, lookUpTable, nbCellIndexTable, nbCellEndTable, nbBoidPositionTable, renderData,
+        nbFrameCounter, nbSortedSpeciesValues, spotlight, wrapAround, cohesion, alignment, separation, separationDistSquared, separationFalloff,
+        speciesShare, interaction12, interaction21, repulsion)
     # Update positions and write to render buffer
     writeData[nblocks, nthreads, nbStream](nbBoids, nbSortedBoids, nbSteering, nbBoidPositionTable, renderData, nbTimeStep, nbFrameCounter,
         nbWanderAngles, nbCursor, wrapAround, speed, jitter, wander, wanderRate, cursorAttention, cursorRadius)
@@ -202,7 +226,7 @@ def recordFrame(renderData: DeviceNDArray) -> None:
 # Update parameters with GUI input (settings that can change while running)
 def updateParams(params: Parameters) -> None:
     global speed, cohesion, alignment, separation, separationDistSquared, separationFalloff, wrapAround, spotlight
-    global jitter, wander, wanderRate, cursorAttention, cursorRadius
+    global jitter, wander, wanderRate, cursorAttention, cursorRadius, speciesShare, interaction12, interaction21, repulsion, blindSpot
     # Kernel arguments are float32, Python floats would arrive as float64
     speed = np.float32(params.SPEED)
     cohesion = np.float32(params.COHESION)
@@ -217,15 +241,23 @@ def updateParams(params: Parameters) -> None:
     wanderRate = np.float32(math.radians(params.WANDER_RATE))
     cursorAttention = np.float32(min(max(params.CURSOR_ATTENTION, 0.0), 1.0))
     cursorRadius = np.float32(max(1.0, params.CURSOR_RADIUS))
+    speciesShare = np.float32(params.SPECIES_2_SHARE)
+    interaction12 = np.int32(params.INTERACTION_12)
+    interaction21 = np.int32(params.INTERACTION_21)
+    repulsion = np.float32(params.REPULSION)
+    blindSpot = params.BLIND_SPOT
 
 
 #######################################
 # Kernels
 #######################################
 
-# Update Boid Table with new cell for every agent
+# Update Boid Table with new cell for every agent. The table is sorted by cell and, within a cell,
+# by species (key = cell * 2 + species): the threads of a warp then mostly handle a single species,
+# and take the same branches in the neighbor search
 @cuda.jit(fastmath=True)
-def fillBoidPositionTable(boids: DeviceNDArray, boidPositionTable: DeviceNDArray, renderData: DeviceNDArray) -> None:
+def fillBoidPositionTable(boids: DeviceNDArray, boidPositionTable: DeviceNDArray, renderData: DeviceNDArray,
+        speciesValues: DeviceNDArray, SPECIES_SHARE: np.float32) -> None:
     index = cuda.grid(1)
     if index >= POPULATION:
         return
@@ -233,8 +265,10 @@ def fillBoidPositionTable(boids: DeviceNDArray, boidPositionTable: DeviceNDArray
     y = int(boids[index,1]//GRID_CELL_SIZE) % GRID_HEIGHT
     gridIndex = x + y * GRID_WIDTH
     boidPositionTable[index,0] = index
-    boidPositionTable[index,1] = gridIndex
-    renderData[index, 2] = 0.0
+    species = 1 if speciesValues[index] < SPECIES_SHARE else 0
+    boidPositionTable[index,1] = gridIndex * 2 + species
+    # Color code: 0 for species 1, 5 for species 2 (1 to 4: spotlight, set later)
+    renderData[index, 2] = 5.0 if species == 1 else 0.0
 
 
 # Update Index Tables to give start and end (exclusive) index for every cell on boidPositionTable
@@ -243,12 +277,13 @@ def fillCellIndexTable(boidPositionTable: DeviceNDArray, cellIndexTable: DeviceN
     index = cuda.grid(1)
     if index >= POPULATION:
         return
-    gridIndex = boidPositionTable[index,1]
+    # (the table's key is cell * 2 + species)
+    gridIndex = boidPositionTable[index,1] >> 1
     # First agent of its cell
-    if index == 0 or boidPositionTable[index-1,1] != gridIndex:
+    if index == 0 or boidPositionTable[index-1,1] >> 1 != gridIndex:
         cellIndexTable[gridIndex] = index
     # Last agent of its cell
-    if index == POPULATION-1 or boidPositionTable[index+1,1] != gridIndex:
+    if index == POPULATION-1 or boidPositionTable[index+1,1] >> 1 != gridIndex:
         cellEndTable[gridIndex] = index + 1
 
 # One block per cell: its threads take the agents of the cell (TILE_SIZE at a time) and
@@ -260,11 +295,12 @@ def fillCellIndexTable(boidPositionTable: DeviceNDArray, cellIndexTable: DeviceN
 # from a random offset that changes every frame: every candidate has the same chance to be
 # tested whatever its cell or position, so the sample isn't biased in any direction
 # sortedBoids -> steering
-@cuda.jit(fastmath=True)
+# (compiled by compileNeighborSearch)
 def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTable: DeviceNDArray, cellIndexTable: DeviceNDArray,
         cellEndTable: DeviceNDArray, boidPositionTable: DeviceNDArray, renderData: DeviceNDArray, frameCounter: DeviceNDArray,
-        SPOTLIGHT: bool, WRAP_AROUND: bool, COHESION: np.float32, ALIGNMENT: np.float32, SEPARATION: np.float32,
-        SEPARATION_DIST_SQUARED: np.float32, SEPARATION_FALLOFF: np.float32) -> None:
+        sortedSpeciesValues: DeviceNDArray, SPOTLIGHT: bool, WRAP_AROUND: bool, COHESION: np.float32, ALIGNMENT: np.float32,
+        SEPARATION: np.float32, SEPARATION_DIST_SQUARED: np.float32, SEPARATION_FALLOFF: np.float32, SPECIES_SHARE: np.float32,
+        INTERACTION_12: np.int32, INTERACTION_21: np.int32, REPULSION: np.float32) -> None:
     cell = cuda.blockIdx.x
     thread = cuda.threadIdx.x
     cellStart, cellEnd = cellIndexTable[cell], cellEndTable[cell]
@@ -293,6 +329,8 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
     # Candidates (x, y, dx, dy) and their slots, shared by the threads of the block
     tile = cuda.shared.array((TILE_SIZE, 4), float32)
     tileSlot = cuda.shared.array(TILE_SIZE, int32)
+    # Candidates' species: 0 (species 1) or 1 (species 2)
+    tileSpecies = cuda.shared.array(TILE_SIZE, int32)
     # Agents of the cell, TILE_SIZE at a time, shared between the blocks of the cell
     # (the whole block skips the loop together when it has no agents)
     for first in range(cellStart + cuda.blockIdx.y * TILE_SIZE, cellEnd, TILE_SIZE * CELL_BLOCKS):
@@ -301,6 +339,9 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
         active = slot < cellEnd
         index = -1
         x, y, dx, dy = float32(0.0), float32(0.0), float32(0.0), float32(0.0)
+        species = 0
+        if compiledWithSpecies and active:
+            species = 1 if sortedSpeciesValues[slot] < SPECIES_SHARE else 0
         if active:
             # Agent id, only needed for the spotlight
             index = boidPositionTable[slot,0]
@@ -320,6 +361,13 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
         cohesionX, cohesionY = float32(0.0), float32(0.0)
         separationX, separationY = float32(0.0), float32(0.0)
         numSeparation = 0
+        repulsionX, repulsionY = float32(0.0), float32(0.0)
+        numRepulsion = 0
+        # How this agent reacts to the other species: 1 attraction, 0 neutral, -1 repulsion
+        # (always attraction within its own species)
+        otherSpeciesReaction = 1
+        if compiledWithSpecies:
+            otherSpeciesReaction = INTERACTION_21 if species == 1 else INTERACTION_12
         #Check if close to edge (for distanche check)
         if WRAP_AROUND and (x < NEIGHBOR_DIST or y < NEIGHBOR_DIST or WIDTH - x < NEIGHBOR_DIST or HEIGHT - y < NEIGHBOR_DIST):
             onEdge = True
@@ -336,6 +384,8 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
                     k += 1
                 candidate = cellFirst[k] + m - listStart[k]
                 tileSlot[thread] = candidate
+                if compiledWithSpecies:
+                    tileSpecies[thread] = 1 if sortedSpeciesValues[candidate] < SPECIES_SHARE else 0
                 for j in range(4):
                     tile[thread, j] = sortedBoids[candidate, j]
             cuda.syncthreads()
@@ -354,7 +404,11 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
                         distY = y - ay
                         distLengthSquared = distX**2 + distY**2
                         isTooClose = (distLengthSquared < SEPARATION_DIST_SQUARED)
-                        isNeighbor = (distLengthSquared < NEIGHBOR_DIST_SQUARED) and isInFOV(dx,dy,distX,distY,directionSquared,distLengthSquared)
+                        # With the blind spot, agents directly behind aren't seen (nor agents at the very same position)
+                        if compiledWithBlindSpot:
+                            isNeighbor = (distLengthSquared < NEIGHBOR_DIST_SQUARED) and isInFOV(dx,dy,distX,distY,directionSquared,distLengthSquared)
+                        else:
+                            isNeighbor = (distLengthSquared < NEIGHBOR_DIST_SQUARED) and distLengthSquared > float32(0.0)
                         # SPOTLIGHT
                         if SPOTLIGHT and index == 0:
                             # Agent spotlight
@@ -368,11 +422,25 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
                                 renderData[agent, 2] = 4.0
                         # Collect agent data
                         if isNeighbor:
-                            numNeighbors += 1
-                            alignmentX += adx
-                            alignmentY += ady
-                            cohesionX += ax
-                            cohesionY += ay
+                            reaction = 1
+                            if compiledWithSpecies and tileSpecies[t] != species:
+                                reaction = otherSpeciesReaction
+                            # Attraction: flocks with it (alignment and cohesion)
+                            if reaction == 1:
+                                numNeighbors += 1
+                                alignmentX += adx
+                                alignmentY += ady
+                                cohesionX += ax
+                                cohesionY += ay
+                            # Repulsion: pushed away from it within the whole neighbor radius, fading
+                            # to 0 at the radius (like separation, which only acts within the smaller radius)
+                            elif compiledWithSpecies and reaction == -1:
+                                repelDist = math.sqrt(distLengthSquared)
+                                repelPush = (float32(1.0) - repelDist / NEIGHBOR_DIST) / repelDist
+                                repulsionX += distX * repelPush
+                                repulsionY += distY * repelPush
+                                numRepulsion += 1
+                            # Separation from any agent, whatever its species
                             if isTooClose:
                                 # Push away from the other agent, stronger the closer it is: 1 when touching,
                                 # fading to 0 at the separation radius. SEPARATION_FALLOFF sets how fast
@@ -409,19 +477,28 @@ def neighborSearch(sortedBoids: DeviceNDArray, steering: DeviceNDArray, lookUpTa
             # Add cohesion vector to direction
             resX += cohesionX * COHESION
             resY += cohesionY * COHESION
-            # Separation
-            if numSeparation > 0:
-                # The pushes add up, so closer and more crowded agents push harder, up to a length
-                # of 1 (like the other rules): larger pushes made agents flip back and forth.
-                # When only one candidate out of stride was tested, the sum is scaled back up first
-                separationX *= float32(stride)
-                separationY *= float32(stride)
-                l = math.sqrt(separationX**2 + separationY**2)
-                if l > float32(1.0):
-                    separationX, separationY = separationX / l, separationY / l
-                # Add separation vector to direction
-                resX += separationX * SEPARATION
-                resY += separationY * SEPARATION
+        # Separation
+        if numSeparation > 0:
+            # The pushes add up, so closer and more crowded agents push harder, up to a length
+            # of 1 (like the other rules): larger pushes made agents flip back and forth.
+            # When only one candidate out of stride was tested, the sum is scaled back up first
+            separationX *= float32(stride)
+            separationY *= float32(stride)
+            l = math.sqrt(separationX**2 + separationY**2)
+            if l > float32(1.0):
+                separationX, separationY = separationX / l, separationY / l
+            # Add separation vector to direction
+            resX += separationX * SEPARATION
+            resY += separationY * SEPARATION
+        # Repulsion (from the other species), added up and capped like separation
+        if numRepulsion > 0:
+            repulsionX *= float32(stride)
+            repulsionY *= float32(stride)
+            l = math.sqrt(repulsionX**2 + repulsionY**2)
+            if l > float32(1.0):
+                repulsionX, repulsionY = repulsionX / l, repulsionY / l
+            resX += repulsionX * REPULSION
+            resY += repulsionY * REPULSION
         # Write to steering buffer at sorted slot
         if active:
             steering[slot, 0] = resX
