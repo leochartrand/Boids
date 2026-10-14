@@ -127,3 +127,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Pyright (local interpreter config)
+pyrightconfig.json
+
+# Dear ImGui window layout, written at runtime
+imgui.ini
+
+# Draw.io sources for the README figures (kept locally)
+diagrams/

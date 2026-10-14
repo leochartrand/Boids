@@ -16,11 +16,47 @@ An important aspect of this model is how agents evaluate their velocity dependin
 
 The evaluations for each boid are independent of each other and can therefore be computed simultaneously. A large population of agents can lead to a large amount of computation, so there is a huge advantage to using parallelism in the implementation of this simulation. The solution presented here exploits parallelism to simulate a population of boids that can reach hundreds of thousands using modern hardware.
 
+# Getting started
+Requirements: an NVIDIA GPU with a driver supporting CUDA 12, OpenGL 4.6, and Python 3.11 or newer (tested with 3.11 and 3.13). The CUDA toolkit is installed through pip, no system-wide installation is needed.
+
+```
+pip install -r requirements.txt
+python boids.py
+```
+
+The rules can be tuned live with the sliders of the GUI. Hold the left mouse button to push the boids away from the cursor, and the right button to pull them towards it. Press SPACE to hide the GUI and ESC to quit. The population, neighborhood radius and window size are set at the top of `boids.py`.
+
 # Design
-(talk about abstraction to implementation - memory management and simulation of behaviour)
 
 ### Neighbor zone
+An agent's neighbors are the flockmates within a certain radius around it. A smaller radius, set as a percentage of the neighbor radius, defines the "personal bubble" used by the separation rule. Each flockmate inside that bubble pushes the agent away, harder the closer it is: the push fades from full strength at contact to nothing at the edge of the bubble, and how quickly it fades can be tuned in the GUI (from the same push at any distance to a push felt only at very close range). Agents also have a blind spot: flockmates directly behind them are not considered, even if they are within the radius. The blind spot is a cone of about 37° on each side of the agent's back, so each agent perceives about 286° around itself. It can be turned off in the GUI, for agents that see all around them.
 
+<p align="center" width="100%">
+    <img width="100%" src="./img/angle.png">
+    <br>Figure 2 – Neighbor zone : neighbors (green), flockmates within the separation radius (red) and a flockmate in the blind spot (grey), which is ignored<br>
+</p>
+
+### Randomness
+Without randomness, the flock quickly settles into very orderly, parallel streams. Two kinds of random steering can be added in the GUI, weighted like the three rules:
+
+ - Jitter : a new random push every frame, independent of the previous ones (Gaussian, so small pushes are the most likely). Agents tremble or wobble along their path. Pushes against an agent's direction also slow it down a little.
+ - Wander : Craig Reynolds' *wander* steering behavior. Each agent steers towards a target on a small circle ahead of it, and the target drifts a little around the circle every frame. Since the circle is ahead, the target is never more than 30° off the agent's direction, and since it drifts slowly and moves with the agent, the agent keeps turning the same way for a while before changing its course. Agents follow smooth, meandering curves. The *wander rate* sets how fast the target drifts.
+
+Both are applied in steps of 1/60 s, so they behave the same way whatever the frame rate.
+
+### Species
+The flock can be split into two species (the share of the second one is set in the GUI), each drawn in its own color. Within a species, agents flock as usual. Between species, each species can react to the other one in three ways:
+
+ - Attraction : the other species is treated like its own, for alignment and cohesion.
+ - Neutral : the other species is ignored, except for separation.
+ - Repulsion : on top of separation, the agent is pushed away from the other species within its whole neighbor radius. Like separation, the push is stronger the closer the other agent is, and its weight is set in the GUI.
+
+Separation always applies, whatever the species: agents never get too close to each other. The two reactions don't have to match, which gives different behaviors:
+
+ - Both attracted : the two species mix and behave like a single one.
+ - Both neutral : the species pass through each other and mostly flock apart.
+ - Both repulsed : the species split into separate groups, with gaps between their territories.
+ - One attracted, the other repulsed : a predator/prey relationship. The prey flee the predators and pack into tight groups, while the predators chase them.
 
 ### Wrap-Around
 The simulation features a *wrap-around* mechanism, which consists of connecting the opposite edges of the grid in order to be able to loop infinitely through the simulated space. On a wrap-around grid, an agent reaching the right boundary would appear on the left side, and if it would reach the lower boundary, it would reappear at the top of the grid. The space of the simulation thus has a toroidal topology. This feature is optional but has some impact on the implementation, namely when it comes to calculating the distance between two agents.
@@ -33,40 +69,29 @@ One solution to this problem is to use spatial partitioning. The simulation spac
 
 <p align="center" width="100%">
     <img width="33%" src="./img/spatial_partitioning.png">
-    <br>Figure 2 – Spatial partitioning : agents only consider flockmates that are positioned in the adjacent cells to evaluate which of them are their neighbors<br>
+    <br>Figure 3 – Spatial partitioning : agents only consider flockmates that are positioned in the adjacent cells to evaluate which of them are their neighbors<br>
 </p>
 
 ### Neighbor search
-Using a partitioned grid, an agent will look for neighbors in 9 cells, i.e. its current cell and the 8 other cells surrounding it. As shown in Figure 3 above, a cell can also have adjacent cells over the edge of the grid when using wrapped geometry. 
+Using a partitioned grid, an agent will look for neighbors in 9 cells, i.e. its current cell and the 8 other cells surrounding it. As shown in Figure 4 below, a cell can also have adjacent cells over the edge of the grid when using wrapped geometry.
 
 <p align="center" width="100%">
     <img width="33%" src="./img/wraparound_grid.png">
-    <br>Figure 3 – Wrap-around edges on the spatial partitioning grid (using a 36 x 18 grid in this example)<br>
+    <br>Figure 4 – Wrap-around edges on the spatial partitioning grid (using a 36 x 18 grid in this example)<br>
 </p>
 
-When searching for neighbors, an agent will thus search in specific cells depending on which one it is on. Instead of constantly performing operations to find the indexes of the neighboring cells, a lookup table can be created at the beginning of the simulation and consulted by the agents, thus saving precious computation time. After identifying the neighboring cells, an agent must then evaluate which of its peers are in those cells. To do so, several buffers are used to keep track of boid positions and cell indexes. Using some sorting and pointer chasing, the agent can efficiently obtain a list of every flockmate which is candidate to be a neighbor. Then, the agent must determine if these candidates are actual neighbors by measuring the distance between the two of them. If so, the three rules are applied and the agent adapts its trajectory to the data collected from its neighborhood. 
+When searching for neighbors, an agent will thus search in specific cells depending on which one it is on. Instead of constantly performing operations to find the indexes of the neighboring cells, a lookup table can be created at the beginning of the simulation and consulted by the agents, thus saving precious computation time. After identifying the neighboring cells, an agent must then evaluate which of its peers are in those cells. To do so, every frame, the agents are sorted by cell (and by species within a cell) and their data (position and direction) is copied in that order. The agents of a same cell are then contiguous in memory, and two other tables give the index where each cell starts and ends. The candidates of a cell can thus be read one after the other, without jumping around in memory. Then, the agent must determine if these candidates are actual neighbors by measuring the distance between the two of them. Once all the candidates of the 9 cells have been evaluated, the three rules are applied to all of the agent's neighbors at once and the agent adapts its trajectory to the data collected from its neighborhood.
+
+### Candidate sampling
+The cost of the neighbor search grows with the density of the flock: when a lot of agents gather in the same area, each of them has thousands of candidates to evaluate. To keep the simulation fast, the number of candidates evaluated by an agent is capped (the *candidate budget*, set at the top of `boids.py`). When the 9 cells hold more candidates than the budget, only one candidate out of every few is evaluated, starting from a random position that changes every frame. Every candidate thus has the same chance of being evaluated, whatever its cell or direction, and an agent's neighbors are still represented from all sides.
+
+Alignment and cohesion are barely affected by this sampling, since they depend on the average direction and position of many neighbors. Separation is more sensitive, since it depends on the few agents that are very close: in dense clumps, it becomes noisier and weaker, and agents may overlap a bit more. Agents with fewer candidates than the budget are not affected at all.
 
 ### Parallelization
-It is relevant to note that the calculations for each agent is independent. The search can therefore be parallelized with a number of threads equal to the population size. Most kernels in the program therefore use 1D indexing, with a thread for every agent, distributed in blocks of 512 threads. 
+It is relevant to note that the calculations for each agent is independent. The search can therefore be parallelized with a number of threads equal to the population size. Most kernels in the program therefore use 1D indexing, with a thread for every agent, distributed in blocks of 512 threads.
 
-As for the neighbor search, the calculations for each of the 9 neighbor cells for the same agent are also independant. The kernel will thus be executed by a number of threads threads totaling 9 times the population size. This kernel uses 2D indexing, where the population is distributed along the X axis and the search in each of the 9 neighbor cells is distributed along the Y axis.
+The neighbor search is organized by cell instead. Each cell is handled by a group of blocks, whose threads take the agents of that cell. Since all these agents share the same 9 neighbor cells, the threads of a block go through the candidates together: the candidates are loaded in the GPU's shared memory (a small, fast memory shared by the threads of a block) one tile at a time, and every thread evaluates its own agent against the whole tile. The threads of a block thus read the same candidate at the same time and loop the same number of times. Dense cells are split between several blocks, so that they are processed in parallel instead of one tile after the other. Since agents are sorted by species within a cell, the threads working together mostly handle agents of the same species, and follow the same steps.
 
-<p align="center" width="100%">
-    <img width="66%" src="./img/threads.png">
-    <br>Figure 4 – Distribution of blocks/threads for the neighbor search kernel<br>
-</p>
+The neighbor search is compiled in several versions, with and without species and the blind spot, and the version matching the current settings is used: features that are turned off don't slow it down.
 
-Given the nature of the simulation, the agents do not share memory. The blocks are not distributed in a way to increase performance but to facilitate kernel invocation and indexing.
-
-# Future additions
-This project is still a work in progress and more features might be added in the future, such as:
-
- - Perception angle: agents don't consider neighbors at a certain angle behind them
- - Predators and species
- - Obstacle avoidance and goal seeking
- - Performance optimization
- - Possibly moving on from Python/Numba to C/Cuda
- - Switching from PyGame to GLFW
- - There currently is a subtle issue with the Separation rule where certain patterns emerge when they shouldn't be
-
-The "*boids engine*" could also be used to support other examples of swarm intelligence such as ant routing or slime simulations. I am considering the possibility of redefining this project as particle system simulator...
+Once the rules have been applied, a second kernel computes each agent's new direction and position.
